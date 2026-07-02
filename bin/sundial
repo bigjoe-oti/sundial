@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Thin dispatcher so recording and querying time is a first-class habit.
+#   sundial now
+#   sundial remember "text" --due 2026-06-26
+#   sundial due
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+cmd="${1:-now}"
+shift || true
+case "$cmd" in
+  now)      exec python3 "$ROOT/cli/now.py" "$@" ;;
+  remember) exec python3 "$ROOT/cli/remember.py" "$@" ;;
+  due)      exec python3 "$ROOT/cli/due.py" "$@" ;;
+  done)     exec python3 "$ROOT/cli/done.py" "$@" ;;
+  ask)      exec python3 "$ROOT/cli/ask.py" "$@" ;;
+  answered) exec python3 "$ROOT/cli/answered.py" "$@" ;;
+  *) echo "usage: sundial {now|remember|due|done|ask|answered} [...]" >&2; exit 1 ;;
+esac

@@ -1,0 +1,9 @@
+on run
+	try
+		set c to paragraphs of (read POSIX file "__NOTIFY_TXT__" as «class utf8»)
+		set t to item 1 of c
+		set AppleScript's text item delimiters to linefeed
+		set m to (items 2 thru -1 of c) as text
+		display notification m with title t
+	end try
+end run
