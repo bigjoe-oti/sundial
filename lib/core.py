@@ -12,10 +12,13 @@ Local-first: everything is plain JSON on disk under ../data. No network, no deps
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
+import tempfile
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -81,16 +84,76 @@ def parse_iso(s: str | None):
 # --------------------------------------------------------------------------- #
 def read_json(path: Path, default):
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return default
+    try:
+        return json.loads(text)
+    except ValueError:
+        # Corrupt but present: quarantine the bad bytes beside the original
+        # (best effort) rather than silently discarding them, then degrade
+        # to default like any other unreadable file.
+        #
+        # TOCTOU guard: a locked writer may have replaced the path with GOOD
+        # bytes between our (unlocked) read and this point -- renaming now
+        # would quarantine a healthy file. Re-read and only quarantine what
+        # is STILL corrupt; if it healed underneath us, leave it alone.
+        try:
+            current = path.read_text(encoding="utf-8")
+        except OSError:
+            return default
+        try:
+            json.loads(current)
+            return default  # healed by a concurrent writer: don't touch it
+        except ValueError:
+            pass
+        stamp = now_utc().strftime("%Y%m%dT%H%M%S%fZ")
+        quarantine = path.with_name(path.name + f".corrupt-{stamp}")
+        try:
+            path.rename(quarantine)
+        except OSError:
+            pass
         return default
 
 
 def write_json(path: Path, obj) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)  # atomic on POSIX
+    # A unique-per-call tmp name (vs. a shared "<name>.tmp") means concurrent
+    # writers to the same target never share a tmp file, so one writer's
+    # in-progress bytes can never be clobbered by another's before either
+    # replace happens. fsync forces the bytes to disk before the atomic
+    # rename, so a crash can never leave `path` pointing at a half-written
+    # tmp.
+    fh = tempfile.NamedTemporaryFile(
+        mode="w", dir=str(path.parent), delete=False, suffix=".tmp",
+        encoding="utf-8")
+    tmp = Path(fh.name)
+    try:
+        with fh:
+            fh.write(json.dumps(obj, indent=2, ensure_ascii=False))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)  # atomic on POSIX
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+@contextmanager
+def _ledger_lock():
+    """Serialize load->mutate->write critical sections across processes and
+    threads via an flock on data/.lock. DATA is rebound by tests, so it's
+    computed here at call time (not module-import time)."""
+    DATA.mkdir(parents=True, exist_ok=True)
+    with open(DATA / ".lock", "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 # --------------------------------------------------------------------------- #
@@ -177,48 +240,51 @@ def parse_due(due_str: str | None):
 
 def add_commitment(text: str, due_str: str | None = None, source: str = "manual",
                    kind: str = "plain", session_id: str | None = None) -> dict:
-    items = load_commitments()
-    due = parse_due(due_str)
-    rec = {
-        "id": uuid.uuid4().hex[:8],
-        "created_at": now_utc().isoformat(),
-        "due_at": due.isoformat() if due else None,
-        "text": text,
-        "source": source,
-        "status": "open",
-    }
-    if kind != "plain":
-        rec["kind"] = kind
-    if session_id:
-        rec["session_id"] = session_id
-    items.append(rec)
-    write_json(COMMITMENTS, items)
-    return rec
+    with _ledger_lock():
+        items = load_commitments()
+        due = parse_due(due_str)
+        rec = {
+            "id": uuid.uuid4().hex[:8],
+            "created_at": now_utc().isoformat(),
+            "due_at": due.isoformat() if due else None,
+            "text": text,
+            "source": source,
+            "status": "open",
+        }
+        if kind != "plain":
+            rec["kind"] = kind
+        if session_id:
+            rec["session_id"] = session_id
+        items.append(rec)
+        write_json(COMMITMENTS, items)
+        return rec
 
 
 def resolve_commitment(commitment_id: str, status: str = "done") -> bool:
-    items = load_commitments()
-    hit = False
-    for c in items:
-        if c.get("id") == commitment_id:
-            c["status"] = status
-            hit = True
-    if hit:
-        write_json(COMMITMENTS, items)
-    return hit
+    with _ledger_lock():
+        items = load_commitments()
+        hit = False
+        for c in items:
+            if c.get("id") == commitment_id:
+                c["status"] = status
+                hit = True
+        if hit:
+            write_json(COMMITMENTS, items)
+        return hit
 
 
 def close_awaiting(status: str = "answered") -> int:
     """Close every open awaiting-reply commitment (any session). Returns count."""
-    items = load_commitments()
-    n = 0
-    for c in items:
-        if c.get("kind") == "awaiting-reply" and c.get("status") == "open":
-            c["status"] = status
-            n += 1
-    if n:
-        write_json(COMMITMENTS, items)
-    return n
+    with _ledger_lock():
+        items = load_commitments()
+        n = 0
+        for c in items:
+            if c.get("kind") == "awaiting-reply" and c.get("status") == "open":
+                c["status"] = status
+                n += 1
+        if n:
+            write_json(COMMITMENTS, items)
+        return n
 
 
 def due_commitments(horizon_hours: int = 24) -> list:
@@ -258,38 +324,39 @@ def start_session(session_id: str, source: str = "startup", transcript_path: str
     transcript at most once. This is why there is no per-turn Stop hook: each
     session is closed out cheaply at the next boot instead of taxing every turn.
     Returns (row, previous_row, created_bool)."""
-    rows = load_ledger()
-    existing = None
-    previous = None
-    for r in rows:
-        if r.get("session_id") == session_id:
-            existing = r
-        else:
-            previous = r  # append order -> last non-current is the previous one
-    dirty = False
-    if previous is not None and previous.get("tokens") is None and previous.get("transcript_path"):
-        _finalize_row(previous)
-        dirty = True
-    created = False
-    if existing is None:
-        existing = {
-            "session_id": session_id,
-            "source": source,
-            "start_ts": now_utc().isoformat(),
-            "end_ts": None,
-            "wall_ms": None,
-            "tokens": None,
-            "transcript_path": transcript_path,
-        }
-        rows.append(existing)
-        created = True
-        dirty = True
-    elif transcript_path and not existing.get("transcript_path"):
-        existing["transcript_path"] = transcript_path
-        dirty = True
-    if dirty:
-        _save_ledger(rows)
-    return existing, previous, created
+    with _ledger_lock():
+        rows = load_ledger()
+        existing = None
+        previous = None
+        for r in rows:
+            if r.get("session_id") == session_id:
+                existing = r
+            else:
+                previous = r  # append order -> last non-current is the previous one
+        dirty = False
+        if previous is not None and previous.get("tokens") is None and previous.get("transcript_path"):
+            _finalize_row(previous)
+            dirty = True
+        created = False
+        if existing is None:
+            existing = {
+                "session_id": session_id,
+                "source": source,
+                "start_ts": now_utc().isoformat(),
+                "end_ts": None,
+                "wall_ms": None,
+                "tokens": None,
+                "transcript_path": transcript_path,
+            }
+            rows.append(existing)
+            created = True
+            dirty = True
+        elif transcript_path and not existing.get("transcript_path"):
+            existing["transcript_path"] = transcript_path
+            dirty = True
+        if dirty:
+            _save_ledger(rows)
+        return existing, previous, created
 
 
 def _finalize_row(row) -> None:

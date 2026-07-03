@@ -32,10 +32,15 @@ def build_block(core, birth, previous):
     due = core.due_commitments()
     if due:
         lines.append(f"\nCommitments due or overdue ({len(due)}):")
-        for c, delta in due:
+        for c, delta in due[:10]:
             tag = (f"OVERDUE by {core.humanize_delta(delta)}" if delta < 0
                    else f"due in {core.humanize_delta(delta)}")
-            lines.append(f"  - [{tag}] {c['text']}")
+            text = str(c.get("text", ""))
+            if len(text) > 200:  # a stray huge paste must not flood context
+                text = text[:200] + "…"
+            lines.append(f"  - [{tag}] {text}")
+        if len(due) > 10:
+            lines.append(f"  …and {len(due) - 10} more.")
     else:
         lines.append("\nNo commitments due right now.")
 

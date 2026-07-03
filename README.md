@@ -102,9 +102,14 @@ where Sundial's watcher begins). Escalation-with-fallback exists cloud-side
 (HumanLayer; and [paperclip #4022](https://github.com/paperclipai/paperclip/issues/4022)
 proposes timeouts for agents stuck "waiting on human" — unshipped).
 [arXiv 2605.30152](https://arxiv.org/abs/2605.30152) shows LLM-free wake
-triggers beat LLM ones. What we could not find anywhere: a **local-first,
-no-LLM escalation ladder that measures absence and terminates in the agent
-autonomously proceeding or standing down.** That combination is Sundial.
+triggers beat LLM ones. The deepest prior art is Horvitz et al.'s
+**PRIORITIES** prototype (Microsoft Research, 1999), which already did
+presence-aware channel laddering — desktop→pager escalation timed by how
+long the user had been away. Sundial stands on that lineage rather than
+beside it: what we could not find anywhere is this *combination* — the
+agent-blocked-on-human framing, local-first zero-dependency packaging, and
+a terminal autonomy contract (the agent proceeds on stated judgment or
+stands down when escalation exhausts). That combination is Sundial.
 Corrections welcome — file an issue with a link.
 
 The pattern write-up: [docs/escalation-then-autonomy.md](docs/escalation-then-autonomy.md).

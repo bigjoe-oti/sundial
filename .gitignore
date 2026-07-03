@@ -14,5 +14,7 @@ data/memory-weights.json
 data/owner.txt
 data/presence.json
 data/watcher.log
+data/.lock
+data/*.corrupt-*
 .pytest_cache/
 .DS_Store

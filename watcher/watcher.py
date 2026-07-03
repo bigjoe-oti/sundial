@@ -30,6 +30,7 @@ PRESENCE_FILE = core.DATA / "presence.json"
 OSASCRIPT = "/usr/bin/osascript"
 NOTIFIED = core.DATA / "notified.json"
 NOTIFY_START, NOTIFY_END = 8, 22  # waking hours (local); stay silent outside
+NOTIFIED_TTL_DAYS = 7  # sweep closed commitments' entries once this stale
 
 RUNG_OFFSETS = (0, 600, 2400)  # seconds after due_at -> T0+10/20/50min when due=T0+10m
 
@@ -96,21 +97,42 @@ RETURN_POOL = (
 )
 
 
+MAX_NOTIFICATION_LEN = 300
+MAX_TEXT_FIELD_LEN = 200
+
+
+def _cap_message(msg: str) -> str:
+    """Backstop cap on the WHOLE notification/spoken string so nothing
+    pathological can ever blow up desktop_notify or say."""
+    if len(msg) > MAX_NOTIFICATION_LEN:
+        return msg[:MAX_NOTIFICATION_LEN] + "…"
+    return msg
+
+
 def pick_message(commitment_id: str, pool: tuple, **fields) -> str:
     """Deterministic per-item voice: same commitment always gets the same
     line. Formatting is fail-safe: a bad template falls back to the pool's
-    classic first entry, then to the bare text."""
+    classic first entry, then to the bare text. The single choke point for
+    every fired message, so length-capping here covers pending_ping's rungs
+    and the return-nudge alike. The TEXT field is truncated first (200
+    chars) BEFORE formatting -- every rung-3 template puts the autonomy
+    consequence AFTER {text}, so a whole-message cap alone would slice off
+    the clause that matters most; the 300-char whole-message cap stays as a
+    backstop only."""
     try:
         idx = int(commitment_id, 16) % len(pool)
     except (ValueError, TypeError):
         idx = 0
     fields.setdefault("owner", owner_name())
+    text = str(fields.get("text", ""))
+    if len(text) > MAX_TEXT_FIELD_LEN:
+        fields["text"] = text[:MAX_TEXT_FIELD_LEN] + "…"
     for candidate in (pool[idx], pool[0]):
         try:
-            return candidate.format(**fields)
+            return _cap_message(candidate.format(**fields))
         except (KeyError, IndexError, ValueError):
             continue
-    return str(fields.get("text", ""))
+    return _cap_message(str(fields.get("text", "")))
 
 
 def migrate_entry(value) -> dict:
@@ -172,7 +194,10 @@ def ripe_rung(c: dict, entry: dict, now, state) -> int:
         if due is None or entry.get("count", 0) >= 1:
             return 0
         return 1 if (now - due).total_seconds() >= 0 else 0
-    if state is None:  # full degrade: v1.5 behavior, offsets relative to due
+    if state is None and entry.get("last_cycle") is None:
+        # Full legacy degrade: pre-absence-clock / brand-new entry with no
+        # accrual history to judge ripeness by -- fall back to v1.5's
+        # wall-elapsed-since-due offsets.
         due = core.parse_iso(c.get("due_at"))
         if due is None:
             return 0
@@ -182,6 +207,11 @@ def ripe_rung(c: dict, entry: dict, now, state) -> int:
             if elapsed >= off:
                 ripe = i
         return ripe
+    # state is None but the entry HAS accrual history (a sensor blip mid
+    # ladder), or state is known: never wall-fallback here -- that would
+    # discard real accrual history for a false instant rung-3. Judge
+    # ripeness on unseen_s thresholds accrued so far; the wall ceiling still
+    # overrides regardless.
     if wall_ceiling_passed(c, now):
         return 3
     ripe = 0
@@ -222,10 +252,15 @@ def _spawn(cmd) -> None:
 
 
 def chime(kind, state) -> None:
-    """Subtle escalating sound beside the popup. HERE: silent. ELSEWHERE:
-    whisper (x0.6). data/chime.txt: 'off' silences, a float scales."""
+    """Subtle escalating sound beside the popup. HERE: silent for rungs 1-2
+    and the return nudge -- but rung 3 (the final/autonomy-consequence fire)
+    always plays, since silence there would hide the moment that matters
+    most. ELSEWHERE: whisper (x0.6). data/chime.txt: 'off' silences, a float
+    scales."""
     try:
-        if state == "here" or kind not in CHIME_MAP:
+        if kind not in CHIME_MAP:
+            return
+        if state == "here" and kind != 3:
             return
         name, vol = CHIME_MAP[kind]
         cfg = None
@@ -294,7 +329,11 @@ def desktop_notify(title: str, message: str) -> bool:
 def record_presence(snap: dict, now) -> dict:
     """Persist the presence sample; return the PREVIOUS record ({} if none)
     for transition detection. 'since' survives while the state is unchanged —
-    it marks when the current state began."""
+    it marks when the current state began.
+
+    Path derives from core.DATA at call time (not the import-time
+    PRESENCE_FILE constant) so tests that redirect core.DATA are isolated
+    automatically — an unpatched test once stamped the LIVE presence.json."""
     pf = core.DATA / "presence.json"
     prev = core.read_json(pf, {})
     if not isinstance(prev, dict):
@@ -305,6 +344,27 @@ def record_presence(snap: dict, now) -> dict:
         "state": snap["state"], "since": since,
         "idle_s": snap["idle_s"], "front_app": snap["front_app"]})
     return prev
+
+
+def _sweep_notified(notified: dict, open_ids: set, now) -> bool:
+    """Drop notified.json entries for commitments that are no longer open
+    AND whose entry is stale (>= NOTIFIED_TTL_DAYS old). An entry with a
+    missing or unparseable 'last' is kept -- staleness can't be proven, so
+    don't guess. Mutates `notified` in place; returns True if anything was
+    dropped."""
+    stale = []
+    for cid, entry in notified.items():
+        if cid in open_ids:
+            continue
+        last_str = entry.get("last") if isinstance(entry, dict) else entry
+        last = core.parse_iso(last_str) if isinstance(last_str, str) else None
+        if last is None:
+            continue
+        if (now - last).total_seconds() >= NOTIFIED_TTL_DAYS * 86400:
+            stale.append(cid)
+    for cid in stale:
+        del notified[cid]
+    return bool(stale)
 
 
 def run_cycle(force: bool = False) -> None:
@@ -358,6 +418,10 @@ def run_cycle(force: bool = False) -> None:
             dirty = True
         except Exception:
             continue
+    open_ids = {c.get("id") for c in core.load_commitments()
+                if c.get("status") == "open"}
+    if _sweep_notified(notified, open_ids, now):
+        dirty = True
     if dirty:
         core.write_json(NOTIFIED, notified)
 
