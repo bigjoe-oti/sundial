@@ -63,6 +63,15 @@ Flags:
 
 - Allow notifications: **System Settings -> Notifications -> "Sundial"**
   the first time it tries to fire.
+- macOS will show a **one-time permission prompt** for Sundial — click
+  **Allow**. If you dismiss or deny it, every banner drops silently and
+  Sundial gives no error.
+- If you use an external display, enable **System Settings ->
+  Notifications -> "Allow notifications when mirroring or sharing"** —
+  otherwise macOS suppresses all banners while mirroring/sharing, with no
+  indication anything was blocked.
+- Recommended notification style: **Alerts** (not Banners), so a nudge you
+  miss stays on screen instead of auto-dismissing.
 - Start a **new** Claude Code session — the `<sundial>` block only
   appears on SessionStart, not mid-session.
 - Try `bin/sundial now` to see the clock-on-glance output directly.

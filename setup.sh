@@ -107,6 +107,34 @@ osacompile -o "$PROJ/watcher/Sundial.app" "$TMP_APPLESCRIPT"
 rm -f "$TMP_APPLESCRIPT"
 echo "  -> watcher/Sundial.app compiled"
 
+# 5b. Fix applet identity/icon/signing so Notification Center actually
+#     registers it (delivery-incident fixes, 2026-07-03): no
+#     CFBundleIdentifier meant the applet could never register; a stray
+#     CFBundleIconName shadowed our CFBundleIconFile so the custom icon
+#     never showed.
+APPLET="$PROJ/watcher/Sundial.app"
+plutil -replace CFBundleIdentifier -string "com.sundial.notifier" "$APPLET/Contents/Info.plist"
+plutil -replace CFBundleIconFile -string "applet" "$APPLET/Contents/Info.plist"
+plutil -remove CFBundleIconName "$APPLET/Contents/Info.plist" 2>/dev/null || true
+if [[ -f "$PROJ/assets/sundial-logo.png" ]]; then
+  ICONWORK="$(mktemp -d -t sundial-iconset)"
+  ICONSET="$ICONWORK/applet.iconset"
+  mkdir -p "$ICONSET"
+  for sz in 16 32 128 256 512; do
+    sz2x=$((sz * 2))
+    sips -z "$sz" "$sz" "$PROJ/assets/sundial-logo.png" --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null
+    sips -z "$sz2x" "$sz2x" "$PROJ/assets/sundial-logo.png" --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null
+  done
+  iconutil -c icns "$ICONSET" -o "$ICONWORK/applet.icns"
+  cp "$ICONWORK/applet.icns" "$APPLET/Contents/Resources/applet.icns"
+  rm -rf "$ICONWORK"
+  echo "  -> custom icon installed from assets/sundial-logo.png"
+fi
+codesign --force --sign - "$APPLET"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APPLET" || true
+echo "  -> Sundial.app: bundle id set, icon fixed, codesigned, re-registered with Launch Services"
+echo "  -> NOTE: macOS will show a one-time permission prompt for Sundial — click Allow. If you use an external display, enable System Settings > Notifications > 'Allow notifications when mirroring or sharing'. Recommended style: Alerts."
+
 # 6. Install the launchd watcher: runs watcher/watcher.py every 10 minutes.
 echo "[6/8] installing the launchd watcher..."
 PLIST="$HOME/Library/LaunchAgents/com.sundial.watcher.plist"

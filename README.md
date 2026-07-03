@@ -1,5 +1,7 @@
 # Sundial
 
+<p align="center"><img src="assets/sundial-logo.png" width="180"></p>
+
 **A sense of time for AI agents. Local-first, zero-dependency, no LLM in the loop.**
 
 > Sundial measures **absence, not time.**
@@ -114,6 +116,20 @@ Corrections welcome — file an issue with a link.
 
 The pattern write-up: [docs/escalation-then-autonomy.md](docs/escalation-then-autonomy.md).
 
+## Troubleshooting delivery
+
+Notifications that compile and run without error can still never reach the
+screen. Three silent killers, all fixed in `setup.sh` as of v1.0.2 — see
+[docs/notes/delivery-incident-2026-07-03.md](docs/notes/delivery-incident-2026-07-03.md):
+
+- **Click Allow on the one-time permission prompt.** Dismissing or denying
+  it drops every banner with no error anywhere.
+- **External display?** Enable System Settings -> Notifications -> "Allow
+  notifications when mirroring or sharing" — mirroring silently suppresses
+  all banners otherwise.
+- **Notification style: Alerts**, not Banners, so a missed nudge doesn't
+  auto-dismiss before you see it.
+
 ## Roadmap
 
 - **v2 — self-estimation:** the ledger already records wall-ms × output
@@ -122,6 +138,8 @@ The pattern write-up: [docs/escalation-then-autonomy.md](docs/escalation-then-au
   [measurably fails](https://arxiv.org/abs/2604.22750)).
 - Learned quiet hours from your actual rhythm; sibling-session awareness;
   cross-machine commitments between two owners' agents.
+- `sundial doctor` — one command verifying the whole delivery chain
+  (daemon, applet identity, permission registration, mirroring setting).
 
 ## Provenance
 
