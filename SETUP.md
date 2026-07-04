@@ -34,11 +34,12 @@ cd sundial
 
 `--fresh` matters: it starts a **new agent identity** — a new `birth.json`
 (the agent's date of birth), empty commitments and session ledger, and
-cleared notify/presence/opportunity/habit state (no stale meeting, folder,
-or offer history from a previous owner). Never copy the previous owner's
-`data/` onto a new machine and skip `--fresh`; that hands the new agent
-someone else's age, history, and half-fired nudges. If `data/birth.json` is
-already absent, `--fresh` is implied automatically.
+cleared notify/presence/opportunity/habit/build/owner-model state
+(`owner_model.json` and `build_state.json` included — no stale meeting,
+folder, build, or offer history from a previous owner). Never copy the
+previous owner's `data/` onto a new machine and skip `--fresh`; that hands
+the new agent someone else's age, history, and half-fired nudges. If
+`data/birth.json` is already absent, `--fresh` is implied automatically.
 
 Flags:
 
@@ -100,6 +101,9 @@ Drop these in `data/` any time; the watcher reads them fresh each cycle
   allowlist (default: `zoom.us`, Microsoft Teams, FaceTime, Webex, Skype)
 - `watch_roots.txt` — one folder path per line to watch for new subfolders
   (default: `~/Desktop`)
+- `ignore_paths.txt` — one path prefix per line the curiosity sensor should
+  never mention (e.g. to keep Sundial from noticing its own repo); kept
+  across `--fresh`, same as the other config files here
 - `chime.txt` — `off`, or a float to scale nudge-sound volume (same as
   `--silent` above)
 - `speak.txt` — voice name (or empty) to speak the final rung aloud (same as

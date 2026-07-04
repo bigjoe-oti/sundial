@@ -29,6 +29,7 @@ sys.path.insert(0, str(WATCHER_DIR))
 
 import watcher  # noqa: E402
 import opportunities  # noqa: E402
+import owner_model  # noqa: E402
 
 HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
@@ -542,7 +543,8 @@ class TestWatcherLadder(unittest.TestCase):
             dd = Path(d)
             orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                     watcher.sample_presence, watcher.sample_assertions_raw,
-                    watcher.sample_screen_locked, watcher.sample_net)
+                    watcher.sample_screen_locked, watcher.sample_net,
+                    watcher.sample_recent_fs, watcher.sample_builds)
             core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
             watcher.NOTIFIED = dd / "notified.json"
             fired = []
@@ -557,6 +559,8 @@ class TestWatcherLadder(unittest.TestCase):
             watcher.sample_assertions_raw = lambda: ""  # no live sensors in tests
             watcher.sample_screen_locked = lambda: False  # no live sensor in tests
             watcher.sample_net = lambda: None  # no live vnstat in tests
+            watcher.sample_recent_fs = lambda: []  # no live mdfind in tests
+            watcher.sample_builds = lambda: {}  # no live ps sampling in tests
             try:
                 rec = core.add_commitment("q?", "+0m", kind="awaiting-reply")
                 watcher.run_cycle(force=True)
@@ -570,7 +574,8 @@ class TestWatcherLadder(unittest.TestCase):
             finally:
                 (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                  watcher.sample_presence, watcher.sample_assertions_raw,
-                 watcher.sample_screen_locked, watcher.sample_net) = orig
+                 watcher.sample_screen_locked, watcher.sample_net,
+                 watcher.sample_recent_fs, watcher.sample_builds) = orig
                 watcher.desktop_notify = orig_notify
                 watcher._spawn = orig_spawn
 
@@ -582,7 +587,8 @@ class TestWatcherLadder(unittest.TestCase):
             dd = Path(d)
             orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                     watcher.sample_presence, watcher.sample_assertions_raw,
-                    watcher.sample_screen_locked, watcher.sample_net)
+                    watcher.sample_screen_locked, watcher.sample_net,
+                    watcher.sample_recent_fs, watcher.sample_builds)
             core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
             watcher.NOTIFIED = dd / "notified.json"
             fired = []
@@ -597,6 +603,8 @@ class TestWatcherLadder(unittest.TestCase):
             watcher.sample_assertions_raw = lambda: ""  # no live sensors in tests
             watcher.sample_screen_locked = lambda: False  # no live sensor in tests
             watcher.sample_net = lambda: None  # no live vnstat in tests
+            watcher.sample_recent_fs = lambda: []  # no live mdfind in tests
+            watcher.sample_builds = lambda: {}  # no live ps sampling in tests
             try:
                 now = core.now_utc()
                 malformed = {
@@ -619,7 +627,8 @@ class TestWatcherLadder(unittest.TestCase):
             finally:
                 (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                  watcher.sample_presence, watcher.sample_assertions_raw,
-                 watcher.sample_screen_locked, watcher.sample_net) = orig
+                 watcher.sample_screen_locked, watcher.sample_net,
+                 watcher.sample_recent_fs, watcher.sample_builds) = orig
                 watcher.desktop_notify = orig_notify
                 watcher._spawn = orig_spawn
 
@@ -728,7 +737,8 @@ class TestAbsenceClock(unittest.TestCase):
             orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                     watcher.sample_presence, watcher.desktop_notify,
                     watcher.wait_for_breakpoint, watcher.sample_assertions_raw,
-                    watcher.sample_net)
+                    watcher.sample_net, watcher.sample_recent_fs,
+                    watcher.sample_builds)
             core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
             watcher.NOTIFIED = dd / "notified.json"
             fired = []
@@ -741,6 +751,8 @@ class TestAbsenceClock(unittest.TestCase):
             watcher.wait_for_breakpoint = lambda *a, **k: ("bound", 0.0)
             watcher.sample_assertions_raw = lambda: ""  # no live sensors in tests
             watcher.sample_net = lambda: None  # no live vnstat in tests
+            watcher.sample_recent_fs = lambda: []  # no live mdfind in tests
+            watcher.sample_builds = lambda: {}  # no live ps sampling in tests
             try:
                 rec = core.add_commitment("q?", "+0m", kind="awaiting-reply")
                 watcher.run_cycle(force=True)
@@ -752,7 +764,8 @@ class TestAbsenceClock(unittest.TestCase):
                 (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                  watcher.sample_presence, watcher.desktop_notify,
                  watcher.wait_for_breakpoint, watcher.sample_assertions_raw,
-                 watcher.sample_net) = orig
+                 watcher.sample_net, watcher.sample_recent_fs,
+                 watcher.sample_builds) = orig
 
     def test_ceiling_fires_even_here_when_created_at_missing(self):
         # Reviewer repro: NO created_at, valid due_at 91 min past. ripe_rung's
@@ -763,7 +776,8 @@ class TestAbsenceClock(unittest.TestCase):
             orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                     watcher.sample_presence, watcher.desktop_notify,
                     watcher.wait_for_breakpoint, watcher.sample_assertions_raw,
-                    watcher.sample_net)
+                    watcher.sample_net, watcher.sample_recent_fs,
+                    watcher.sample_builds)
             core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
             watcher.NOTIFIED = dd / "notified.json"
             fired = []
@@ -776,6 +790,8 @@ class TestAbsenceClock(unittest.TestCase):
             watcher.wait_for_breakpoint = lambda *a, **k: ("bound", 0.0)
             watcher.sample_assertions_raw = lambda: ""  # no live sensors in tests
             watcher.sample_net = lambda: None  # no live vnstat in tests
+            watcher.sample_recent_fs = lambda: []  # no live mdfind in tests
+            watcher.sample_builds = lambda: {}  # no live ps sampling in tests
             try:
                 now = core.now_utc()
                 c = {"id": "a0000001",
@@ -791,14 +807,16 @@ class TestAbsenceClock(unittest.TestCase):
                 (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                  watcher.sample_presence, watcher.desktop_notify,
                  watcher.wait_for_breakpoint, watcher.sample_assertions_raw,
-                 watcher.sample_net) = orig
+                 watcher.sample_net, watcher.sample_recent_fs,
+                 watcher.sample_builds) = orig
 
     def test_run_cycle_fires_when_away_and_ripe(self):
         with tempfile.TemporaryDirectory() as d:
             dd = Path(d)
             orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                     watcher.sample_presence, watcher.desktop_notify,
-                    watcher.sample_assertions_raw, watcher.sample_net)
+                    watcher.sample_assertions_raw, watcher.sample_net,
+                    watcher.sample_recent_fs, watcher.sample_builds)
             core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
             watcher.NOTIFIED = dd / "notified.json"
             fired = []
@@ -808,6 +826,8 @@ class TestAbsenceClock(unittest.TestCase):
                                                "front_app": None}
             watcher.sample_assertions_raw = lambda: ""  # no live sensors in tests
             watcher.sample_net = lambda: None  # no live vnstat in tests
+            watcher.sample_recent_fs = lambda: []  # no live mdfind in tests
+            watcher.sample_builds = lambda: {}  # no live ps sampling in tests
             try:
                 rec = core.add_commitment("q?", "+0m", kind="awaiting-reply")
                 core.write_json(watcher.NOTIFIED, {rec["id"]: {
@@ -820,7 +840,8 @@ class TestAbsenceClock(unittest.TestCase):
             finally:
                 (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                  watcher.sample_presence, watcher.desktop_notify,
-                 watcher.sample_assertions_raw, watcher.sample_net) = orig
+                 watcher.sample_assertions_raw, watcher.sample_net,
+                 watcher.sample_recent_fs, watcher.sample_builds) = orig
 
     def test_record_presence_roundtrip(self):
         with tempfile.TemporaryDirectory() as d:
@@ -854,7 +875,8 @@ class TestAbsenceClock(unittest.TestCase):
             orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                     watcher.PRESENCE_FILE, watcher.sample_presence,
                     watcher.desktop_notify, watcher.wait_for_breakpoint,
-                    watcher.sample_assertions_raw, watcher.sample_net)
+                    watcher.sample_assertions_raw, watcher.sample_net,
+                    watcher.sample_recent_fs, watcher.sample_builds)
             core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
             watcher.NOTIFIED = dd / "notified.json"
             watcher.PRESENCE_FILE = dd / "presence.json"
@@ -866,6 +888,8 @@ class TestAbsenceClock(unittest.TestCase):
             watcher.wait_for_breakpoint = lambda *a, **k: ("bound", 0.0)
             watcher.sample_assertions_raw = lambda: ""  # no live sensors in tests
             watcher.sample_net = lambda: None  # no live vnstat in tests
+            watcher.sample_recent_fs = lambda: []  # no live mdfind in tests
+            watcher.sample_builds = lambda: {}  # no live ps sampling in tests
             try:
                 rec = core.add_commitment("q?", "+0m", kind="awaiting-reply")
                 past = (core.now_utc() - timedelta(seconds=1800)).isoformat()
@@ -890,7 +914,8 @@ class TestAbsenceClock(unittest.TestCase):
                 (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                  watcher.PRESENCE_FILE, watcher.sample_presence,
                  watcher.desktop_notify, watcher.wait_for_breakpoint,
-                 watcher.sample_assertions_raw, watcher.sample_net) = orig
+                 watcher.sample_assertions_raw, watcher.sample_net,
+                 watcher.sample_recent_fs, watcher.sample_builds) = orig
 
     def test_return_transition_keeps_plain_pool_voice(self):
         # Regression: a plain commitment due in the same cycle as an
@@ -901,7 +926,8 @@ class TestAbsenceClock(unittest.TestCase):
             orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                     watcher.PRESENCE_FILE, watcher.sample_presence,
                     watcher.desktop_notify, watcher.wait_for_breakpoint,
-                    watcher.sample_assertions_raw, watcher.sample_net)
+                    watcher.sample_assertions_raw, watcher.sample_net,
+                    watcher.sample_recent_fs, watcher.sample_builds)
             core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
             watcher.NOTIFIED = dd / "notified.json"
             watcher.PRESENCE_FILE = dd / "presence.json"
@@ -914,6 +940,8 @@ class TestAbsenceClock(unittest.TestCase):
             watcher.wait_for_breakpoint = lambda *a, **k: ("bound", 0.0)
             watcher.sample_assertions_raw = lambda: ""  # no live sensors in tests
             watcher.sample_net = lambda: None  # no live vnstat in tests
+            watcher.sample_recent_fs = lambda: []  # no live mdfind in tests
+            watcher.sample_builds = lambda: {}  # no live ps sampling in tests
             try:
                 rec = core.add_commitment("q?", "+0m")  # plain kind
                 past = (core.now_utc() - timedelta(seconds=1800)).isoformat()
@@ -933,7 +961,8 @@ class TestAbsenceClock(unittest.TestCase):
                 (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                  watcher.PRESENCE_FILE, watcher.sample_presence,
                  watcher.desktop_notify, watcher.wait_for_breakpoint,
-                 watcher.sample_assertions_raw, watcher.sample_net) = orig
+                 watcher.sample_assertions_raw, watcher.sample_net,
+                 watcher.sample_recent_fs, watcher.sample_builds) = orig
 
     def test_chime_commands_and_state_modifiers(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1040,7 +1069,8 @@ class TestAbsenceClock(unittest.TestCase):
             dd = Path(d)
             orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                     watcher.sample_presence, watcher.desktop_notify,
-                    watcher.sample_assertions_raw, watcher.sample_net)
+                    watcher.sample_assertions_raw, watcher.sample_net,
+                    watcher.sample_recent_fs, watcher.sample_builds)
             core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
             watcher.NOTIFIED = dd / "notified.json"
             watcher.sample_presence = lambda: {"state": "away", "idle_s": 999.0,
@@ -1048,6 +1078,8 @@ class TestAbsenceClock(unittest.TestCase):
             watcher.desktop_notify = lambda t, m: True
             watcher.sample_assertions_raw = lambda: ""  # no live sensors in tests
             watcher.sample_net = lambda: None  # no live vnstat in tests
+            watcher.sample_recent_fs = lambda: []  # no live mdfind in tests
+            watcher.sample_builds = lambda: {}  # no live ps sampling in tests
             try:
                 closed = core.add_commitment("closed", "+0m")
                 core.resolve_commitment(closed["id"], "answered")
@@ -1069,7 +1101,8 @@ class TestAbsenceClock(unittest.TestCase):
             finally:
                 (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                  watcher.sample_presence, watcher.desktop_notify,
-                 watcher.sample_assertions_raw, watcher.sample_net) = orig
+                 watcher.sample_assertions_raw, watcher.sample_net,
+                 watcher.sample_recent_fs, watcher.sample_builds) = orig
 
 
 class TestDeferredDelivery(unittest.TestCase):
@@ -1078,7 +1111,8 @@ class TestDeferredDelivery(unittest.TestCase):
                 watcher.sample_presence, watcher.desktop_notify,
                 watcher._spawn, watcher.wait_for_breakpoint,
                 watcher.sample_assertions_raw, watcher.sample_screen_locked,
-                watcher.sample_net)
+                watcher.sample_net, watcher.sample_recent_fs,
+                watcher.sample_builds)
         core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
         watcher.NOTIFIED = dd / "notified.json"
         watcher.sample_presence = lambda: {"state": state, "idle_s": 2.0,
@@ -1087,6 +1121,8 @@ class TestDeferredDelivery(unittest.TestCase):
         watcher.sample_assertions_raw = lambda: ""  # no live sensors in tests
         watcher.sample_screen_locked = lambda: False  # no live sensor in tests
         watcher.sample_net = lambda: None  # no live vnstat in tests
+        watcher.sample_recent_fs = lambda: []  # no live mdfind in tests
+        watcher.sample_builds = lambda: {}  # no live ps sampling in tests
         return orig
 
     def _restore(self, orig):
@@ -1094,7 +1130,8 @@ class TestDeferredDelivery(unittest.TestCase):
          watcher.sample_presence, watcher.desktop_notify,
          watcher._spawn, watcher.wait_for_breakpoint,
          watcher.sample_assertions_raw, watcher.sample_screen_locked,
-         watcher.sample_net) = orig
+         watcher.sample_net, watcher.sample_recent_fs,
+         watcher.sample_builds) = orig
 
     def _ripe_item(self, text="q?"):
         rec = core.add_commitment(text, "+0m", kind="awaiting-reply")
@@ -1274,7 +1311,8 @@ class TestCourtesy(unittest.TestCase):
                     watcher.sample_presence, watcher.desktop_notify,
                     watcher._spawn, watcher.wait_for_breakpoint,
                     watcher.sample_assertions_raw, watcher.sample_screen_locked,
-                    watcher.sample_net, core.now_local)
+                    watcher.sample_net, watcher.sample_recent_fs,
+                    watcher.sample_builds, core.now_local)
             core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
             watcher.NOTIFIED = dd / "notified.json"
             fired = []
@@ -1286,6 +1324,8 @@ class TestCourtesy(unittest.TestCase):
             watcher.sample_assertions_raw = lambda: ""
             watcher.sample_screen_locked = lambda: False
             watcher.sample_net = lambda: None  # no live vnstat in tests
+            watcher.sample_recent_fs = lambda: []  # no live mdfind in tests
+            watcher.sample_builds = lambda: {}  # no live ps sampling in tests
             three_am = core.now_utc().astimezone(core.tzinfo()).replace(hour=3)
             core.now_local = lambda tz_name=core.DEFAULT_TZ: three_am
             try:
@@ -1300,7 +1340,8 @@ class TestCourtesy(unittest.TestCase):
                  watcher.sample_presence, watcher.desktop_notify,
                  watcher._spawn, watcher.wait_for_breakpoint,
                  watcher.sample_assertions_raw, watcher.sample_screen_locked,
-                 watcher.sample_net, core.now_local) = orig
+                 watcher.sample_net, watcher.sample_recent_fs,
+                 watcher.sample_builds, core.now_local) = orig
 
     def test_muted_fire_logged_and_silent(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1309,7 +1350,8 @@ class TestCourtesy(unittest.TestCase):
                     watcher.sample_presence, watcher.desktop_notify,
                     watcher._spawn, watcher.wait_for_breakpoint,
                     watcher.sample_assertions_raw, watcher.sample_screen_locked,
-                    watcher.sample_net)
+                    watcher.sample_net, watcher.sample_recent_fs,
+                    watcher.sample_builds)
             core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
             watcher.NOTIFIED = dd / "notified.json"
             spawned = []
@@ -1321,6 +1363,8 @@ class TestCourtesy(unittest.TestCase):
             watcher.sample_assertions_raw = lambda: ""
             watcher.sample_screen_locked = lambda: True   # locked -> mute
             watcher.sample_net = lambda: None  # no live vnstat in tests
+            watcher.sample_recent_fs = lambda: []  # no live mdfind in tests
+            watcher.sample_builds = lambda: {}  # no live ps sampling in tests
             try:
                 rec = core.add_commitment("q?", "+0m", kind="awaiting-reply")
                 core.write_json(watcher.NOTIFIED, {rec["id"]: {
@@ -1335,7 +1379,8 @@ class TestCourtesy(unittest.TestCase):
                  watcher.sample_presence, watcher.desktop_notify,
                  watcher._spawn, watcher.wait_for_breakpoint,
                  watcher.sample_assertions_raw, watcher.sample_screen_locked,
-                 watcher.sample_net) = orig
+                 watcher.sample_net, watcher.sample_recent_fs,
+                 watcher.sample_builds) = orig
 
 
 class TestPromptSubmitHook(unittest.TestCase):
@@ -1499,6 +1544,18 @@ class TestPresence(unittest.TestCase):
             self.assertIsNone(presence.front_app())
         finally:
             presence.subprocess.run = orig
+
+    PS_SAMPLE = ("  PID ELAPSED COMM\n"
+                 "  123 05:12 /usr/local/bin/npm\n"
+                 "  456 1-02:03:04 /opt/homebrew/bin/cargo\n"
+                 "  789 00:30 /bin/zsh\n")
+
+    def test_parse_ps_builds(self):
+        got = presence.parse_ps_builds(self.PS_SAMPLE)
+        self.assertEqual(got[123]["cmd"], "npm")
+        self.assertEqual(got[123]["etime_s"], 312)
+        self.assertEqual(got[456]["etime_s"], 93784)
+        self.assertNotIn(789, got)
 
 
 class TestNetSense(unittest.TestCase):
@@ -1759,6 +1816,16 @@ class TestOpportunities(unittest.TestCase):
             {"zoom.us"}, {"Google Chrome"}, None, now)
         self.assertEqual(active["app"], "Google Chrome")
 
+    def test_detect_build_finished(self):
+        now = core.now_utc()
+        state = {"123": {"cmd": "npm", "etime_s": 312},
+                 "999": {"cmd": "make", "etime_s": 30}}
+        events, new_state = opportunities.detect_build_finished(
+            {456: {"cmd": "cargo", "etime_s": 10}}, state, now)
+        self.assertEqual(len(events), 1)          # npm ended >=60s; make too short
+        self.assertEqual(events[0]["cmd"], "npm")
+        self.assertEqual(new_state, {"456": {"cmd": "cargo", "etime_s": 10}})
+
     def test_detect_new_folders(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -1788,6 +1855,74 @@ class TestOpportunities(unittest.TestCase):
             events3, _ = opportunities.detect_new_folders((root,), known2)
             self.assertEqual(events3, [])            # all caught up
 
+    MD_RUNS = []
+
+    def test_ignore_paths_config_blocks_prefixes(self):
+        (core.DATA / "ignore_paths.txt").write_text("/r/ProjectX\n")
+        def runner(args):
+            return "/r/ProjectX/newfile\n/r/Other/thing\n"
+        got = opportunities.mdfind_recent(Path("/r"), 60, runner)
+        self.assertEqual(got, ["/r/Other/thing"])
+
+    def test_mdfind_recent_merges_and_caps(self):
+        outs = ["/r/a\n/r/b\n", "/r/b\n/r/c\n/r/d\n/r/e\n/r/f\n/r/g\n"]
+        def runner(args):
+            self.MD_RUNS.append(args)
+            return outs.pop(0) if outs else ""
+        got = opportunities.mdfind_recent(Path("/r"), 1260, runner)
+        self.assertEqual(got, ["/r/a", "/r/b", "/r/c", "/r/d", "/r/e"])  # cap 5, dedup
+
+    def test_mdfind_recent_runner_failure(self):
+        def runner(args):
+            raise OSError("no mdfind")
+        self.assertEqual(opportunities.mdfind_recent(Path("/r"), 60, runner), [])
+
+    def test_detect_recent_fs_events(self):
+        def runner(args):
+            root = args[args.index("-onlyin") + 1]
+            return f"{root}/NewThing\n"
+        evts = opportunities.detect_recent_fs((Path("/x"), Path("/y")), runner)
+        self.assertEqual(len(evts), 2)
+        self.assertEqual(evts[0]["kind"], "curiosity")
+        self.assertEqual(evts[0]["via"], "mdfind")
+
+    def test_mdfind_recent_skips_ignored_paths(self):
+        outs = ["/r/node_modules/pkg\n/r/.hidden/x\n/r/Real/Sub\n"]
+
+        def runner(args):
+            return outs.pop(0) if outs else ""
+        got = opportunities.mdfind_recent(Path("/r"), 1260, runner)
+        self.assertEqual(got, ["/r/Real/Sub"])
+
+    def test_detect_new_folders_skips_ignored_names(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            _, known = opportunities.detect_new_folders((root,), {})
+            (root / "node_modules").mkdir()
+            (root / "Real").mkdir()
+            events, _ = opportunities.detect_new_folders((root,), known)
+            names = {Path(e["folder"]).name for e in events}
+            self.assertEqual(names, {"Real"})
+
+    def test_auto_watch_appends_desktop_child(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig = (core.DATA, watcher._desktop_root)
+            core.DATA = dd
+            watcher._desktop_root = lambda: dd / "Desk"
+            try:
+                (dd / "Desk").mkdir()
+                watcher.maybe_auto_watch(str(dd / "Desk" / "NewProj"))
+                roots = (dd / "watch_roots.txt").read_text()
+                self.assertIn("NewProj", roots)
+                watcher.maybe_auto_watch(str(dd / "Desk" / "NewProj"))  # dup
+                self.assertEqual(roots.count("NewProj"),
+                                 (dd / "watch_roots.txt").read_text().count("NewProj"))
+                watcher.maybe_auto_watch(str(dd / "Elsewhere" / "X"))   # non-desktop
+                self.assertNotIn("Elsewhere", (dd / "watch_roots.txt").read_text())
+            finally:
+                core.DATA, watcher._desktop_root = orig
+
     def test_add_and_dedup(self):
         rec = opportunities.add_opportunity(
             "meeting-start", {"app": "zoom.us", "started": "X"}, "offer?", None)
@@ -1815,6 +1950,27 @@ class TestOpportunities(unittest.TestCase):
             opportunities.count_offer(today)
         self.assertFalse(opportunities.offer_allowed(today))
         self.assertTrue(opportunities.offer_allowed("2026-07-05"))  # resets
+
+    def test_prep_flag_and_budget(self):
+        self.assertFalse(opportunities.prep_enabled())
+        (core.DATA / "prep_enabled").write_text("")
+        self.assertTrue(opportunities.prep_enabled())
+        self.assertEqual(opportunities.prep_budget(), 2)
+        (core.DATA / "prep_budget.txt").write_text("5")
+        self.assertEqual(opportunities.prep_budget(), 5)
+        today = "2026-07-04"
+        for _ in range(5):
+            self.assertTrue(opportunities.prep_allowed(today))
+            opportunities.count_prep(today)
+        self.assertFalse(opportunities.prep_allowed(today))
+
+    def test_prep_budget_zero_means_zero(self):
+        # fail-closed: a fresh day (no prefs entry yet) must still honor a
+        # zero or negative budget -- no free spawn per day-rollover.
+        (core.DATA / "prep_budget.txt").write_text("0")
+        self.assertFalse(opportunities.prep_allowed("2026-07-04"))
+        (core.DATA / "prep_budget.txt").write_text("-3")
+        self.assertFalse(opportunities.prep_allowed("2026-07-04"))
 
     def test_habit_log_and_rotation(self):
         opportunities.log_habit({"kind": "test", "x": 1})
@@ -1898,6 +2054,52 @@ class TestOpportunities(unittest.TestCase):
         ns = sorted(r["evidence"]["n"] for r in raw)
         self.assertEqual(ns, list(range(50)))
 
+    def test_prune_ledger(self):
+        now = core.now_utc()
+        old = (now - timedelta(days=20)).isoformat()
+        opportunities.save_ledger([
+            {"id": "a", "kind": "curiosity", "detected_at": old,
+             "status": "fulfilled", "evidence": {}, "offer_msg": "",
+             "expires_at": None},
+            {"id": "b", "kind": "curiosity", "detected_at": old,
+             "status": "offered", "evidence": {}, "offer_msg": "",
+             "expires_at": None},
+            {"id": "c", "kind": "curiosity",
+             "detected_at": now.isoformat(), "status": "expired",
+             "evidence": {}, "offer_msg": "", "expires_at": None}])
+        self.assertTrue(opportunities.prune_ledger(now))
+        ids = [r["id"] for r in opportunities.load_ledger()]
+        self.assertEqual(ids, ["b", "c"])  # open kept; young terminal kept
+
+    def test_decline_suppression_cycle(self):
+        self.assertFalse(opportunities.kind_suppressed("meeting-start"))
+        for n in (1, 2, 3):
+            self.assertEqual(opportunities.decline_kind("meeting-start"), n)
+        self.assertTrue(opportunities.kind_suppressed("meeting-start"))
+        opportunities.allow_kind("meeting-start")
+        self.assertFalse(opportunities.kind_suppressed("meeting-start"))
+
+    def test_ignored_skips_dot_and_junk_components(self):
+        self.assertTrue(opportunities._ignored("/x/node_modules/y"))
+        self.assertTrue(opportunities._ignored("/x/.hidden/z"))
+        self.assertFalse(opportunities._ignored("/x/Real/Sub"))
+
+    def test_ignored_checks_components_not_substrings(self):
+        # "distX" must NOT be treated as the ignored "dist" component.
+        self.assertFalse(opportunities._ignored("/x/distX/y"))
+        self.assertTrue(opportunities._ignored("/x/dist/y"))
+
+    def test_mdfind_recent_ignores_relative_to_root_not_ancestors(self):
+        # A watch root living under a dotdir (e.g. ~/.config/apps) must not
+        # go dark: only components RELATIVE to the queried root count.
+        root = Path("/Users/x/.config/apps")
+
+        def runner(args):
+            return (f"{root}/NewThing\n{root}/node_modules/y\n")
+        got = opportunities.mdfind_recent(root, 1260, runner)
+        self.assertIn(f"{root}/NewThing", got)
+        self.assertNotIn(f"{root}/node_modules/y", got)
+
 
 class TestOpportunityCycle(unittest.TestCase):
     @staticmethod
@@ -1916,7 +2118,8 @@ class TestOpportunityCycle(unittest.TestCase):
                 watcher.sample_presence, watcher.desktop_notify,
                 watcher._spawn, watcher.wait_for_breakpoint,
                 watcher.sample_assertions_raw, watcher.sample_screen_locked,
-                watcher.sample_net)
+                watcher.sample_net, watcher.sample_recent_fs,
+                watcher.sample_builds, watcher._spawn_prep_proc)
         core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
         watcher.NOTIFIED = dd / "notified.json"
         watcher.sample_presence = lambda: {"state": state, "idle_s": 2.0,
@@ -1927,6 +2130,9 @@ class TestOpportunityCycle(unittest.TestCase):
         watcher.sample_assertions_raw = lambda: self._raw_for(procs)
         watcher.sample_screen_locked = lambda: False  # no live sensor in tests
         watcher.sample_net = lambda: None  # no live vnstat in tests
+        watcher.sample_recent_fs = lambda: []  # no live mdfind in tests
+        watcher.sample_builds = lambda: {}  # no live ps sampling in tests
+        watcher._spawn_prep_proc = lambda cmd, cwd: None  # never exec claude
         return orig
 
     def _restore(self, orig):
@@ -1934,7 +2140,8 @@ class TestOpportunityCycle(unittest.TestCase):
          watcher.sample_presence, watcher.desktop_notify,
          watcher._spawn, watcher.wait_for_breakpoint,
          watcher.sample_assertions_raw, watcher.sample_screen_locked,
-         watcher.sample_net) = orig
+         watcher.sample_net, watcher.sample_recent_fs,
+         watcher.sample_builds, watcher._spawn_prep_proc) = orig
 
     def test_meeting_start_offers_once(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1954,6 +2161,28 @@ class TestOpportunityCycle(unittest.TestCase):
                 self.assertTrue(any('"offer"' in h for h in habits))
             finally:
                 self._restore(orig)
+
+    def test_silent_prep_flag_off_never_spawns(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig = (core.DATA, watcher._spawn_prep_proc)
+            core.DATA = dd
+            spawned = []
+            watcher._spawn_prep_proc = lambda cmd, cwd: spawned.append(cmd)
+            try:
+                rec = {"id": "ab12", "kind": "meeting-start",
+                       "evidence": {"app": "zoom.us", "started": "T"}}
+                watcher.maybe_silent_prep(rec, "2026-07-04")
+                self.assertEqual(spawned, [])          # flag off
+                (dd / "prep_enabled").write_text("")
+                watcher.maybe_silent_prep(rec, "2026-07-04")
+                self.assertEqual(len(spawned), 1)
+                self.assertIn("--model", spawned[0])
+                self.assertIn("haiku", spawned[0])
+                self.assertTrue((dd / "opportunities" / "ab12" /
+                                 "prompt.txt").exists())
+            finally:
+                core.DATA, watcher._spawn_prep_proc = orig
 
     def test_meeting_start_via_webrtc_assertion_in_chrome(self):
         # THE case this patch exists for: Meet-in-Chrome. Chrome is not in
@@ -2001,21 +2230,37 @@ class TestOpportunityCycle(unittest.TestCase):
                 self._restore(orig)
 
     def test_curiosity_never_notifies(self):
+        # Rework for the Spotlight-backed seam: run_cycle's curiosity block
+        # now calls ONLY watcher.sample_recent_fs, so the legacy poller's
+        # baseline-cycle-then-mkdir dance is replaced by stubbing the seam
+        # to return the event directly. Popup-absence assertion unchanged.
         with tempfile.TemporaryDirectory() as d:
             dd = Path(d)
-            roots = dd / "roots"
-            roots.mkdir()
-            (dd / "watch_roots.txt").write_text(str(roots) + "\n")
             fired = []
             orig = self._env(dd)
             watcher.desktop_notify = lambda t, m: fired.append(m) or True
+            watcher.sample_recent_fs = lambda: [
+                {"kind": "curiosity", "folder": str(dd / "NewClient")}]
             try:
-                watcher.run_cycle(force=True)          # baseline
-                (roots / "NewClient").mkdir()
                 watcher.run_cycle(force=True)
                 led = core.read_json(dd / "opportunities.json", [])
                 self.assertTrue(any(r["kind"] == "curiosity" for r in led))
                 self.assertEqual(fired, [])            # context-only
+            finally:
+                self._restore(orig)
+
+    def test_curiosity_v2_event_flows_to_ledger(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig = self._env(dd)
+            watcher.sample_recent_fs = lambda: [
+                {"kind": "curiosity", "folder": str(dd / "New"), "via": "mdfind"}]
+            try:
+                watcher.run_cycle(force=True)
+                led = core.read_json(dd / "opportunities.json", [])
+                self.assertTrue(any(r["kind"] == "curiosity" and
+                                    r["evidence"].get("via") == "mdfind"
+                                    for r in led))
             finally:
                 self._restore(orig)
 
@@ -2152,6 +2397,106 @@ class TestOpportunityCycle(unittest.TestCase):
                 self.assertEqual(rec["evidence"]["net"], net_snap)
             finally:
                 self._restore(orig)
+
+    def test_suppressed_kind_records_but_no_popup(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            fired = []
+            orig = self._env(dd, procs={"zoom.us"})
+            watcher.desktop_notify = lambda t, m: fired.append(m) or True
+            try:
+                for _ in range(3):
+                    opportunities.decline_kind("meeting-start")
+                watcher.run_cycle(force=True)
+                led = core.read_json(dd / "opportunities.json", [])
+                self.assertTrue(any(r["kind"] == "meeting-start" for r in led))
+                self.assertEqual(fired, [])
+            finally:
+                self._restore(orig)
+
+    def test_build_finished_offer(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            fired = []
+            orig = self._env(dd)   # default stub: watcher.sample_builds -> {}
+            core.write_json(dd / "build_state.json",
+                            {"123": {"cmd": "npm", "etime_s": 300}})
+            watcher.desktop_notify = lambda t, m: fired.append((t, m)) or True
+            try:
+                watcher.run_cycle(force=True)
+                offers = [f for f in fired if f[0] == "Sundial"]
+                self.assertEqual(len(offers), 1)
+                self.assertIn("npm", offers[0][1])
+                led = core.read_json(dd / "opportunities.json", [])
+                self.assertTrue(any(r["kind"] == "build-finished" for r in led))
+            finally:
+                self._restore(orig)
+
+
+class TestOwnerModel(unittest.TestCase):
+    def test_distill_stretches_and_latency(self):
+        now = core.now_utc()
+        t0 = now - timedelta(hours=5)
+        evts = [
+            {"kind": "presence", "from": "away", "to": "here",
+             "ts": t0.isoformat()},
+            {"kind": "answered", "latency_s": 120,
+             "ts": (t0 + timedelta(minutes=10)).isoformat()},
+            {"kind": "presence", "from": "here", "to": "away",
+             "ts": (t0 + timedelta(hours=2)).isoformat()},
+            {"kind": "presence", "from": "away", "to": "elsewhere",
+             "ts": (t0 + timedelta(hours=3)).isoformat()},
+            {"kind": "answered", "latency_s": 480,
+             "ts": (t0 + timedelta(hours=3, minutes=5)).isoformat()},
+            {"kind": "fire", "rung": 1, "state": "away",
+             "defer_reason": "pause", "deferred_s": 20.0, "muted": True,
+             "ts": (t0 + timedelta(hours=4)).isoformat()},
+            {"kind": "estimate", "task": "x", "est_s": 100, "actual_s": 150,
+             "ratio": 1.5, "ts": now.isoformat()},
+        ]
+        m = owner_model.distill(evts, now)
+        self.assertEqual(m["active_stretches"]["count"], 1)   # one closed stretch
+        self.assertAlmostEqual(m["active_stretches"]["median_m"], 120, delta=1)
+        self.assertEqual(m["reply_latency"]["count"], 2)
+        self.assertEqual(m["reply_latency"]["median_s"], 300)  # even count -> mean of 120,480
+        self.assertEqual(m["fires"]["muted"], 1)
+        self.assertEqual(m["estimates"]["count"], 1)
+        # owner-driven only: presence away->here (+1), answered (+1),
+        # presence here->away is EXCLUDED (to=away), presence away->elsewhere
+        # (+1), answered (+1), fire state=away is EXCLUDED, estimate is
+        # EXCLUDED (not an owner-activity kind) -> sum == 4
+        self.assertEqual(sum(m["hourly_activity"]), 4)
+        self.assertGreater(m["data_span_days"], 0.2)
+
+    def test_distill_hourly_ignores_net_telemetry(self):
+        now = core.now_utc()
+        t0 = now - timedelta(hours=1)
+        evts = [
+            {"kind": "net", "iface": "en0", "rx_Bps": 100, "tx_Bps": 50,
+             "ts": t0.isoformat()},
+            {"kind": "meeting-net", "app": "zoom.us", "rx_Bps": 100,
+             "tx_Bps": 50, "ts": (t0 + timedelta(minutes=1)).isoformat()},
+        ]
+        m = owner_model.distill(evts, now)
+        self.assertEqual(sum(m["hourly_activity"]), 0)
+
+    def test_refresh_roundtrip_and_age_skip(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig = core.DATA
+            core.DATA = dd
+            try:
+                (dd / "habits.jsonl").write_text(json.dumps(
+                    {"kind": "fire", "rung": 1, "state": "away",
+                     "defer_reason": "none", "deferred_s": 0.0,
+                     "muted": False,
+                     "ts": core.now_utc().isoformat()}) + "\n")
+                m = owner_model.refresh(force=True)
+                self.assertEqual(m["fires"]["total"], 1)
+                self.assertTrue((dd / "owner_model.json").exists())
+                self.assertIsNone(owner_model.refresh())   # young -> skip
+            finally:
+                core.DATA = orig
 
 
 if __name__ == "__main__":

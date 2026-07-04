@@ -15,6 +15,8 @@ Usage:
   watcher.py --test     fire one test notification to prove the channel
 """
 
+import os
+import shutil
 import subprocess
 import sys
 import time
@@ -27,6 +29,7 @@ import core  # noqa: E402
 
 import presence  # noqa: E402  (same directory)
 import opportunities  # noqa: E402  (same directory)
+import owner_model  # noqa: E402  (same directory)
 
 UNSEEN_OFFSETS = (600, 1200, 3000)   # 10/20/50 min of not-seeing-the-chat
 ELSEWHERE_WEIGHT = 0.5               # two busy minutes = one absent minute
@@ -186,6 +189,10 @@ OFFER_POOL = {
         "That {app} meeting wrapped a while back — want minutes from any notes you have?",
         "{owner}, an old {app} meeting finally closed out. If notes exist, I can still draft the MOM in chat.",
     ),
+    "build-finished": (
+        "Your {cmd} run just finished ({duration_m}m). Want me to look at the results?",
+        "{owner}, {cmd} wrapped after {duration_m}m — shall I check the output / next step?",
+    ),
 }
 
 
@@ -207,6 +214,54 @@ def sample_screen_locked() -> "bool | None":
 def sample_net() -> "dict | None":
     """One vnstat sample per cycle. Tests monkeypatch THIS function."""
     return presence.net_sample()
+
+
+def _mdfind_runner(args) -> str:
+    r = subprocess.run(args, timeout=15, capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def sample_recent_fs() -> list:
+    """Curiosity sensor seam. Spotlight when available; legacy poller
+    otherwise (same known_folders.json behavior as before)."""
+    roots = opportunities.watch_roots()
+    if opportunities.mdfind_available():
+        return opportunities.detect_recent_fs(roots, _mdfind_runner)
+    kf = core.read_json(core.DATA / "known_folders.json", {})
+    if not isinstance(kf, dict):
+        kf = {}
+    events, new_kf = opportunities.detect_new_folders(roots, kf)
+    core.write_json(core.DATA / "known_folders.json", new_kf)
+    return events
+
+
+def sample_builds() -> dict:
+    """One ps sample per cycle, parsed into build-tool pid -> {cmd,etime_s}.
+    Tests monkeypatch THIS function."""
+    return presence.parse_ps_builds(presence.sample_ps())
+
+
+def _desktop_root():
+    return Path.home() / "Desktop"
+
+
+def maybe_auto_watch(event_folder: str) -> None:
+    try:
+        p = Path(event_folder)
+        if p.parent != _desktop_root():
+            return
+        wf = core.DATA / "watch_roots.txt"
+        existing = ([line.strip() for line in
+                     wf.read_text(encoding="utf-8").splitlines()
+                     if line.strip()] if wf.exists()
+                    else [str(r) for r in opportunities.watch_roots()])
+        if str(p) in existing:
+            return
+        existing.append(str(p))
+        wf.write_text("\n".join(existing) + "\n", encoding="utf-8")
+        opportunities.log_habit({"kind": "auto-watch", "root": str(p)})
+    except Exception:
+        pass
 
 
 def sound_allowed(state, prev_presence: dict, now) -> bool:
@@ -311,6 +366,49 @@ def _spawn(cmd) -> None:
     """Fire-and-forget subprocess; tests replace this seam."""
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL)
+
+
+def _spawn_prep_proc(cmd: list, cwd: str) -> None:
+    """Fire-and-forget Haiku prep hand; tests replace this seam."""
+    subprocess.Popen(cmd, cwd=cwd, stdout=open(cwd + "/scaffold.md", "w"),
+                     stderr=subprocess.DEVNULL)
+
+
+def _prep_claude_bin() -> "str | None":
+    """Resolve the claude binary for silent prep: SUNDIAL_CLAUDE_BIN env
+    override first, then a PATH lookup. None means no spawn -- prep must
+    never guess at a hardcoded path."""
+    return os.environ.get("SUNDIAL_CLAUDE_BIN") or shutil.which("claude")
+
+
+def maybe_silent_prep(rec: dict, today: str) -> None:
+    """Silent MOM-scaffold prep for a just-started meeting -- hard-flagged
+    OFF by default (data/prep_enabled must exist). No notification, no
+    offer: a scratch dir + prompt.txt is written and a cheap Haiku hand is
+    spawned to draft a scaffold that just waits on disk for later. Whole
+    body fails safe: a prep miss must never touch a commitment or cycle."""
+    try:
+        if not opportunities.prep_enabled():
+            return
+        if not opportunities.prep_allowed(today):
+            return
+        claude_bin = _prep_claude_bin()
+        if claude_bin is None:
+            opportunities.log_habit({"kind": "prep", "error": "no-binary"})
+            return
+        scratch = core.DATA / "opportunities" / rec["id"]
+        scratch.mkdir(parents=True, exist_ok=True)
+        prompt = opportunities.build_prep_prompt(rec)
+        (scratch / "prompt.txt").write_text(prompt, encoding="utf-8")
+        # fail-closed: charge the budget BEFORE spawning -- a persistent
+        # count fault must bound spawns, not unleash them (worst case one
+        # day-slot is charged without a spawn).
+        opportunities.count_prep(today)
+        _spawn_prep_proc(
+            [claude_bin, "-p", prompt, "--model", "haiku"], str(scratch))
+        opportunities.log_habit({"kind": "prep", "opp": rec["id"]})
+    except Exception:
+        pass
 
 
 def chime(kind, state, audible=True) -> None:
@@ -627,7 +725,8 @@ def run_cycle(force: bool = False) -> None:
             # evidence carries started/ended timestamps -> each real meeting
             # is unique; dedup only stops same-event re-offers
             rec = opportunities.add_opportunity(kind, evidence, msg, expiry)
-            if rec and not stale and opportunities.offer_allowed(today):
+            if (rec and not stale and opportunities.offer_allowed(today)
+                    and not opportunities.kind_suppressed(kind)):
                 desktop_notify("Sundial", msg)
                 chime("return", state, audible)
                 opportunities.count_offer(today)
@@ -636,20 +735,48 @@ def run_cycle(force: bool = False) -> None:
                 if stale:
                     habit["stale"] = True
                 opportunities.log_habit(habit)
-        # curiosity
-        kf = core.read_json(core.DATA / "known_folders.json", {})
-        if not isinstance(kf, dict):
-            kf = {}
-        c_events, new_kf = opportunities.detect_new_folders(
-            opportunities.watch_roots(), kf)
-        core.write_json(core.DATA / "known_folders.json", new_kf)
-        for evt in c_events:
+            if kind == "meeting-start" and rec:
+                maybe_silent_prep(rec, today)
+        # builds: the compiler/test/docker run that just finished
+        build_state = core.read_json(core.DATA / "build_state.json", {})
+        if not isinstance(build_state, dict):
+            build_state = {}
+        b_events, new_build_state = opportunities.detect_build_finished(
+            sample_builds(), build_state, now)
+        core.write_json(core.DATA / "build_state.json", new_build_state)
+        for evt in b_events:
+            cmd, duration_s = evt.get("cmd"), evt.get("duration_s", 0)
+            evidence = {"cmd": cmd, "duration_s": duration_s,
+                        "ended": now.isoformat()}
+            msg = pick_message(uuid.uuid4().hex[:8],
+                               OFFER_POOL["build-finished"], text="",
+                               cmd=cmd, duration_m=int(duration_s // 60))
             rec = opportunities.add_opportunity(
-                "curiosity", {"folder": evt["folder"]}, evt["folder"],
+                "build-finished", evidence, msg,
+                (now + timedelta(seconds=3600)).isoformat())
+            if (rec and opportunities.offer_allowed(today)
+                    and not opportunities.kind_suppressed("build-finished")):
+                desktop_notify("Sundial", msg)
+                chime("return", state, audible)
+                opportunities.count_offer(today)
+            if rec:
+                opportunities.log_habit({"kind": "offer",
+                                         "opp": "build-finished", "cmd": cmd})
+        # curiosity
+        for evt in sample_recent_fs():
+            rec = opportunities.add_opportunity(
+                "curiosity",
+                {"folder": evt["folder"], **({"via": evt["via"]}
+                                             if evt.get("via") else {})},
+                evt["folder"],
                 (now + timedelta(seconds=86400)).isoformat())
             if rec:
+                maybe_auto_watch(evt["folder"])
                 opportunities.log_habit({"kind": "curiosity",
                                          "folder": evt["folder"]})
+        if opportunities.prune_ledger(now):
+            pass
+        owner_model.refresh()
     except Exception:
         pass
 

@@ -177,3 +177,45 @@ def net_sample() -> "dict | None":
     if vnstat_bin is None:
         return None
     return net_rates(_run([vnstat_bin, "--json", "f"]))
+
+
+BUILD_TOOLS = ("xcodebuild", "npm", "pytest", "docker", "cargo", "make",
+               "vite", "webpack", "node")
+
+
+def _etime_to_s(t: str) -> int:
+    days = 0
+    if "-" in t:
+        d, t = t.split("-", 1)
+        days = int(d)
+    parts = [int(x) for x in t.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    h, m, s = parts
+    return ((days * 24 + h) * 60 + m) * 60 + s
+
+
+def parse_ps_builds(ps_text: str) -> dict:
+    """Parse `ps -axo pid,etime,comm` output into {pid:int -> {"cmd","etime_s"}}
+    for comm basenames in BUILD_TOOLS. The header row and any line that
+    doesn't parse cleanly (bad pid, bad etime) is dropped, not fatal."""
+    out = {}
+    for line in (ps_text or "").splitlines():
+        fields = line.split(None, 2)
+        if len(fields) < 3:
+            continue
+        pid_s, etime_s, comm = fields
+        if not pid_s.isdigit():
+            continue
+        cmd = Path(comm).name
+        if cmd not in BUILD_TOOLS:
+            continue
+        try:
+            out[int(pid_s)] = {"cmd": cmd, "etime_s": _etime_to_s(etime_s)}
+        except ValueError:
+            continue
+    return out
+
+
+def sample_ps() -> str:
+    return _run(["/bin/ps", "-axo", "pid,etime,comm"])

@@ -63,7 +63,10 @@ Three actors, strictly separated. The separation *is* the design.
 ## Extension points
 
 - `data/meeting_apps.txt`, `data/watch_roots.txt`, `data/cli_apps.txt`,
-  `data/chime.txt`, `data/speak.txt` — config without code.
+  `data/chime.txt`, `data/speak.txt`, `data/ignore_paths.txt` — config
+  without code. `ignore_paths.txt` lists path prefixes the curiosity sensor
+  should never mention — one per line — e.g. to keep Sundial from noticing
+  its own repo.
 - `contrib/sundial.30s.sh` — SwiftBar menu-bar face (optional).
 - The hooks are thin: any harness that can run a command per prompt and
   read stdout can mount Sundial.

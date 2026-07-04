@@ -22,5 +22,8 @@ data/opportunities.json
 data/opportunity_prefs.json
 data/habits.jsonl
 data/habits.1.jsonl
+data/build_state.json
+data/owner_model.json
+data/opportunities/
 .pytest_cache/
 .DS_Store

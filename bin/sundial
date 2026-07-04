@@ -15,5 +15,8 @@ case "$cmd" in
   done)     exec python3 "$ROOT/cli/done.py" "$@" ;;
   ask)      exec python3 "$ROOT/cli/ask.py" "$@" ;;
   answered) exec python3 "$ROOT/cli/answered.py" "$@" ;;
-  *) echo "usage: sundial {now|remember|due|done|ask|answered} [...]" >&2; exit 1 ;;
+  decline)  exec python3 "$ROOT/cli/decline.py" "$@" ;;
+  allow)    exec python3 "$ROOT/cli/allow.py" "$@" ;;
+  owner)    exec python3 "$ROOT/cli/owner.py" "$@" ;;
+  *) echo "usage: sundial {now|remember|due|done|ask|answered|decline|allow|owner} [...]" >&2; exit 1 ;;
 esac

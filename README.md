@@ -96,16 +96,40 @@ sampling to work, deterministically, no LLM in the loop:
   when it ends. A meeting that closed out long after it plausibly ran (the
   machine slept through it) gets a softer, duration-free offer instead of a
   made-up number.
-- **Folder curiosity.** New top-level folders under `~/Desktop` (or your own
-  `watch_roots.txt`) get one gentle mention, capped at three per cycle so a
-  bulk unzip doesn't flood you.
+- **Folder curiosity, any depth.** Spotlight (`mdfind`) watches `~/Desktop`
+  (or your own `watch_roots.txt`) for new or recently-added folders *at any
+  depth*, not just top-level — capped at 5 per cycle so a bulk unzip doesn't
+  flood you. A folder that earns a mention self-enrolls as a new watch root,
+  so curiosity naturally follows you deeper into a project. No Spotlight?
+  It falls back to the original top-level poller.
+- **Build awareness.** Notices when a long-running `xcodebuild`, `npm`,
+  `pytest`, `cargo`, `docker`, `make`, or similar just finished (anything
+  under a minute is noise, not a build) and offers to look at the results.
+- **Manners: decline and allow.** `sundial decline <kind>` (e.g.
+  `meeting-start`, `curiosity`, `build-finished`) mutes that kind of offer
+  after 3 declines without you saying a word again; `sundial allow <kind>`
+  re-enables it. Declined kinds still get recorded to the ledger — just
+  never popped up.
 - **The Habit Ledger.** Every fire, mute, presence transition, and offer logs
-  one line to `data/habits.jsonl` (rotated at 5MB) — raw material for a
-  future Owner Model. Nothing is acted on yet; it only observes.
+  one line to `data/habits.jsonl` (rotated at 5MB, pruned after 14 days once
+  terminal) — raw material for the Owner Model.
+- **The Owner Model.** `sundial owner` distills the Habit Ledger — no LLM,
+  just medians and percentiles — into active-stretch lengths, reply latency,
+  an hourly activity histogram, and offer/fire counts. Deterministic,
+  refreshed at most every 6 hours, meant for the agent to read before
+  writing a weekly reflection.
+- **Silent prep — flagged off by default.** When a meeting starts, Sundial
+  can quietly draft a minutes-of-meeting scaffold in the background (no
+  popup, no notification) so it's waiting on disk if you want it later. This
+  stays OFF until you opt in: create `data/prep_enabled` (touch the file) and
+  optionally cap it with `data/prep_budget.txt` (a bare integer, default 2/
+  day). It also needs a `claude` binary to hand the draft to — set
+  `SUNDIAL_CLAUDE_BIN` to its path, or have `claude` on your `PATH`; missing
+  either just skips the spawn (logged, never crashes).
 - **Manners, not spam.** At most 5 offers a day, deduped by evidence so the
-  same meeting or folder never offers twice. Open offers also ride along in
-  the `<sundial>` / `<sundial-tick>` context blocks, so the agent can act on
-  one without you repeating yourself in chat.
+  same meeting, folder, or build never offers twice. Open offers also ride
+  along in the `<sundial>` / `<sundial-tick>` context blocks, so the agent
+  can act on one without you repeating yourself in chat.
 
 ## Optional: a menu-bar face
 

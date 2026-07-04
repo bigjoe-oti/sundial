@@ -101,6 +101,112 @@ def count_offer(today: str) -> None:
         core.write_json(_prefs_path(), prefs)
 
 
+OPP_TTL_DAYS = 14
+DECLINE_SUPPRESS_AT = 3
+
+
+def prune_ledger(now) -> bool:
+    """Drop terminal ledger records (expired/fulfilled/declined) once they've
+    aged past OPP_TTL_DAYS. Open/live records are never touched regardless
+    of age. Returns True iff anything was dropped."""
+    with core._ledger_lock():
+        items = load_ledger()
+        keep, dropped = [], False
+        for r in items:
+            terminal = r.get("status") in ("expired", "fulfilled", "declined")
+            det = core.parse_iso(r.get("detected_at"))
+            stale = (det is not None and
+                     (now - det).total_seconds() >= OPP_TTL_DAYS * 86400)
+            if terminal and stale:
+                dropped = True
+                continue
+            keep.append(r)
+        if dropped:
+            save_ledger(keep)
+        return dropped
+
+
+PREP_DAILY_CAP_DEFAULT = 2
+
+
+def prep_enabled() -> bool:
+    return (core.DATA / "prep_enabled").exists()
+
+
+def prep_budget() -> int:
+    try:
+        return int((core.DATA / "prep_budget.txt").read_text(
+            encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return PREP_DAILY_CAP_DEFAULT
+
+
+def prep_allowed(today: str) -> bool:
+    prefs = core.read_json(_prefs_path(), {})
+    daily = prefs.get("prep", {}) if isinstance(prefs, dict) else {}
+    if daily.get("date") != today:
+        # fail-closed: a fresh day still honors a zero/negative budget
+        return prep_budget() > 0
+    return int(daily.get("count", 0)) < prep_budget()
+
+
+def count_prep(today: str) -> None:
+    with core._ledger_lock():
+        prefs = core.read_json(_prefs_path(), {})
+        if not isinstance(prefs, dict):
+            prefs = {}
+        daily = prefs.get("prep", {})
+        if daily.get("date") != today:
+            daily = {"date": today, "count": 0}
+        daily["count"] = int(daily.get("count", 0)) + 1
+        prefs["prep"] = daily
+        core.write_json(_prefs_path(), prefs)
+
+
+def build_prep_prompt(rec: dict) -> str:
+    ev = rec.get("evidence", {})
+    return (
+        "You are preparing a minutes-of-meeting scaffold. A meeting on "
+        f"{ev.get('app', 'a conferencing app')} started at "
+        f"{ev.get('started', 'unknown time')}. Produce a clean markdown "
+        "scaffold with: title line, date/time/platform header, Attendees "
+        "(placeholder list), Agenda (3 placeholder items), Discussion "
+        "notes (empty bullets), Decisions (empty), Action items table "
+        "(owner/action/due). Write ONLY the scaffold markdown.")
+
+
+def decline_kind(kind: str) -> int:
+    """Record one decline for `kind` in the manners prefs; returns the new
+    count so callers can echo '(n/3 to suppress)'."""
+    with core._ledger_lock():
+        prefs = core.read_json(_prefs_path(), {})
+        if not isinstance(prefs, dict):
+            prefs = {}
+        declined = prefs.get("declined", {})
+        declined[kind] = int(declined.get(kind, 0)) + 1
+        prefs["declined"] = declined
+        core.write_json(_prefs_path(), prefs)
+        return declined[kind]
+
+
+def allow_kind(kind: str) -> None:
+    """Reset a kind's decline count to 0, re-enabling its offers."""
+    with core._ledger_lock():
+        prefs = core.read_json(_prefs_path(), {})
+        if isinstance(prefs, dict) and kind in prefs.get("declined", {}):
+            prefs["declined"][kind] = 0
+            core.write_json(_prefs_path(), prefs)
+
+
+def kind_suppressed(kind: str) -> bool:
+    """True once `kind` has been declined DECLINE_SUPPRESS_AT+ times without
+    an intervening allow_kind()."""
+    prefs = core.read_json(_prefs_path(), {})
+    if not isinstance(prefs, dict):
+        return False
+    return int(prefs.get("declined", {}).get(kind, 0)) >= DECLINE_SUPPRESS_AT
+
+
 def log_habit(event: dict) -> None:
     """Append one observation to the Habit Ledger. Never raises — a habit
     lost is better than a cycle broken."""
@@ -155,6 +261,32 @@ def detect_meeting(display_procs: set, webrtc: set, active, now):
     return [], active
 
 
+BUILD_MIN_S = 60
+
+
+def detect_build_finished(current: dict, state: dict, now) -> "tuple[list, dict]":
+    """Compare this cycle's live build-tool pids (current, from
+    presence.sample_ps -> presence.parse_ps_builds) against the pids tracked
+    LAST cycle (state, str(pid)-keyed). A pid tracked last cycle but absent
+    now just finished; short-lived processes (recorded etime_s < BUILD_MIN_S)
+    are noise -- a `make` that ran for 30s never earned a notification. New
+    state is simply `current`, restringified, ready to persist as-is."""
+    events = []
+    for pid_s, info in (state or {}).items():
+        try:
+            pid = int(pid_s)
+        except (TypeError, ValueError):
+            continue
+        if pid in current:
+            continue
+        etime_s = info.get("etime_s", 0)
+        if etime_s >= BUILD_MIN_S:
+            events.append({"kind": "build-finished", "cmd": info.get("cmd"),
+                           "duration_s": etime_s})
+    new_state = {str(pid): info for pid, info in current.items()}
+    return events, new_state
+
+
 def watch_roots() -> tuple:
     try:
         raw = (core.DATA / "watch_roots.txt").read_text(encoding="utf-8")
@@ -167,12 +299,92 @@ def watch_roots() -> tuple:
     return (Path.home() / "Desktop",)
 
 
+FS_WINDOW_S = 1260
+CURIOSITY_CAP = 5
+
+IGNORE_PARTS = ("node_modules", ".git", "__pycache__", "venv", ".venv",
+                "dist", "build", ".next", ".cache")
+
+
+def _ignored_prefixes() -> tuple:
+    try:
+        raw = (core.DATA / "ignore_paths.txt").read_text(encoding="utf-8")
+        return tuple(line.strip() for line in raw.splitlines() if line.strip())
+    except OSError:
+        return ()
+
+
+def _ignored(path: str, root=None) -> bool:
+    """True when any path COMPONENT (not substring) is a known junk dir or
+    hidden (starts with '.'). 'distX' is a real folder, not 'dist'. When
+    `root` is given, only components RELATIVE to root are checked -- a
+    watch root that itself lives under a dotdir (e.g. ~/.config/apps) must
+    not blind every child under it. Falls back to the full-path check if
+    `path` isn't actually under `root`. Additionally, any path under a
+    prefix listed in data/ignore_paths.txt is ignored outright -- built for
+    excluding Sundial's own repos from its curiosity (self-noise)."""
+    for prefix in _ignored_prefixes():
+        if str(path).startswith(prefix):
+            return True
+    p = Path(path)
+    if root is not None:
+        try:
+            p = p.relative_to(root)
+        except ValueError:
+            pass
+    return any(part in IGNORE_PARTS or part.startswith(".")
+               for part in p.parts)
+
+
+def mdfind_available() -> bool:
+    return Path("/usr/bin/mdfind").exists()
+
+
+def mdfind_recent(root, window_s, runner) -> list:
+    """Ask Spotlight for recent creations/additions under root. runner is
+    injected (args list -> stdout str) so tests never touch mdfind."""
+    queries = (
+        f'kMDItemContentType == "public.folder" && '
+        f'kMDItemFSCreationDate >= $time.now(-{int(window_s)})',
+        f'kMDItemDateAdded >= $time.now(-{int(window_s)})',
+    )
+    out, seen = [], set()
+    for q in queries:
+        try:
+            raw = runner(["/usr/bin/mdfind", "-onlyin", str(root), q])
+        except Exception:
+            continue
+        for line in (raw or "").splitlines():
+            line = line.strip()
+            if (not line or line == str(root) or line in seen
+                    or _ignored(line, root)):
+                continue
+            seen.add(line)
+            out.append(line)
+            if len(out) >= CURIOSITY_CAP:
+                return out
+    return out
+
+
+def detect_recent_fs(roots, runner) -> list:
+    events, total = [], 0
+    for root in roots:
+        for path in mdfind_recent(Path(root), FS_WINDOW_S, runner):
+            events.append({"kind": "curiosity", "folder": path,
+                           "via": "mdfind"})
+            total += 1
+            if total >= CURIOSITY_CAP:
+                return events
+    return events
+
+
 def detect_new_folders(roots, known: dict):
     events, new_known = [], dict(known)
     for root in roots:
         try:
             names = sorted(p.name for p in Path(root).iterdir()
-                           if p.is_dir() and not p.name.startswith("."))
+                           if p.is_dir() and not p.name.startswith(".")
+                           and p.name not in IGNORE_PARTS)
         except OSError:
             continue
         key = str(root)

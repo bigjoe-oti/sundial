@@ -15,13 +15,16 @@
 #   --speak [VOICE]     write data/speak.txt (final rung speaks aloud)
 #   --fresh             wipe agent identity (new birth.json, empty
 #                       commitments/ledger, no notified/notify/presence state,
-#                       no meeting/folder/opportunity/habit history)
+#                       no meeting/folder/opportunity/habit/build/owner-model
+#                       history)
 #
 # Optional config files (create by hand in data/, all read fresh each cycle):
 #   meeting_apps.txt    one app name per line, added to the meeting-detection
 #                       allowlist (zoom.us, Teams, FaceTime, Webex, Skype)
 #   watch_roots.txt     one folder path per line to watch for new
 #                       subfolders (default: ~/Desktop)
+#   ignore_paths.txt    one path prefix per line the curiosity sensor should
+#                       never mention (e.g. Sundial's own repo)
 #   chime.txt           'off', or a float to scale nudge-sound volume
 #   speak.txt           voice name (or empty) to speak the final rung aloud
 set -euo pipefail
@@ -78,7 +81,8 @@ if [[ "$FRESH" -eq 1 || ! -f "$PROJ/data/birth.json" ]]; then
         "$PROJ/data/notify.txt" "$PROJ/data/presence.json" \
         "$PROJ/data/meeting_state.json" "$PROJ/data/known_folders.json" \
         "$PROJ/data/opportunities.json" "$PROJ/data/opportunity_prefs.json" \
-        "$PROJ/data/habits.jsonl" "$PROJ/data/habits.1.jsonl"
+        "$PROJ/data/habits.jsonl" "$PROJ/data/habits.1.jsonl" \
+        "$PROJ/data/build_state.json" "$PROJ/data/owner_model.json"
 else
   echo "  -> existing agent identity found in data/birth.json, keeping it (pass --fresh to reset)"
 fi
