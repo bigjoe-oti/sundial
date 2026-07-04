@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
-import core  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "watcher"))
 import owner_model  # noqa: E402
