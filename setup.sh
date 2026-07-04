@@ -14,7 +14,16 @@
 #   --silent            write data/chime.txt 'off' (no nudge sounds)
 #   --speak [VOICE]     write data/speak.txt (final rung speaks aloud)
 #   --fresh             wipe agent identity (new birth.json, empty
-#                       commitments/ledger, no notified/notify state)
+#                       commitments/ledger, no notified/notify/presence state,
+#                       no meeting/folder/opportunity/habit history)
+#
+# Optional config files (create by hand in data/, all read fresh each cycle):
+#   meeting_apps.txt    one app name per line, added to the meeting-detection
+#                       allowlist (zoom.us, Teams, FaceTime, Webex, Skype)
+#   watch_roots.txt     one folder path per line to watch for new
+#                       subfolders (default: ~/Desktop)
+#   chime.txt           'off', or a float to scale nudge-sound volume
+#   speak.txt           voice name (or empty) to speak the final rung aloud
 set -euo pipefail
 
 NAME="Friend"
@@ -66,7 +75,10 @@ if [[ "$FRESH" -eq 1 || ! -f "$PROJ/data/birth.json" ]]; then
   printf '[]' > "$PROJ/data/session-ledger.json"
   rm -f "$PROJ/data/birth.json" "$PROJ/data/notified.json" \
         "$PROJ/data/memory-weights.json" "$PROJ/data/last_prompt.json" \
-        "$PROJ/data/notify.txt"
+        "$PROJ/data/notify.txt" "$PROJ/data/presence.json" \
+        "$PROJ/data/meeting_state.json" "$PROJ/data/known_folders.json" \
+        "$PROJ/data/opportunities.json" "$PROJ/data/opportunity_prefs.json" \
+        "$PROJ/data/habits.jsonl" "$PROJ/data/habits.1.jsonl"
 else
   echo "  -> existing agent identity found in data/birth.json, keeping it (pass --fresh to reset)"
 fi
@@ -213,4 +225,10 @@ The first notification may need your OK: System Settings -> Notifications ->
 allow "Sundial".
 
 Start a new Claude Code session to see the <sundial> context block.
+
+Optional: drop meeting_apps.txt, watch_roots.txt, chime.txt, or speak.txt in
+data/ to tune meeting detection, folder-watch roots, or sound (see setup.sh
+header). A SwiftBar menu-bar face is also available: copy
+contrib/sundial.30s.sh into your SwiftBar plugin folder and set SUNDIAL_HOME
+to $PROJ.
 BANNER

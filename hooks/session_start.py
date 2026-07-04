@@ -49,7 +49,19 @@ def build_block(core, birth, previous):
         "raise any of it is your judgment."
     )
     lines.append("</sundial>")
-    return "\n".join(lines)
+    out = "\n".join(lines)
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "watcher"))
+        import opportunities
+        live = opportunities.open_offers(core.now_utc())[:5]
+        if live:
+            offer_lines = [f"- [{r['kind']}] {str(r.get('offer_msg',''))[:200]}"
+                           for r in live]
+            out += ("\n<opportunities>\n" + "\n".join(offer_lines)
+                    + "\n</opportunities>")
+    except Exception:
+        pass
+    return out
 
 
 def main():

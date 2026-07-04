@@ -20,7 +20,6 @@ Higher score = more salient (recently and/or frequently touched).
 from __future__ import annotations
 
 import math
-import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path

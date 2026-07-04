@@ -273,18 +273,23 @@ def resolve_commitment(commitment_id: str, status: str = "done") -> bool:
         return hit
 
 
-def close_awaiting(status: str = "answered") -> int:
-    """Close every open awaiting-reply commitment (any session). Returns count."""
+def close_awaiting_detailed(status: str = "answered") -> list:
+    """Close every open awaiting-reply commitment; return the closed records."""
     with _ledger_lock():
         items = load_commitments()
-        n = 0
+        closed = []
         for c in items:
             if c.get("kind") == "awaiting-reply" and c.get("status") == "open":
                 c["status"] = status
-                n += 1
-        if n:
+                closed.append(dict(c))
+        if closed:
             write_json(COMMITMENTS, items)
-        return n
+        return closed
+
+
+def close_awaiting(status: str = "answered") -> int:
+    """Close every open awaiting-reply commitment (any session). Returns count."""
+    return len(close_awaiting_detailed(status))
 
 
 def due_commitments(horizon_hours: int = 24) -> list:

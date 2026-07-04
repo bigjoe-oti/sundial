@@ -127,14 +127,14 @@ now", stand down. Update `the-blocking-question-protocol memory`.
 - LICENSE: MIT, "Copyright (c) 2026 J. Servo LLC" (adjustable at spec review).
 
 ### Scrub + genericize (execute full inventory)
-Must: MEMORY_DIR → `WALLCLOCK_MEMORY_DIR` env with computed default
+Must: MEMORY_DIR → an env var with the old project's prefix, computed default
 (`~/.claude/projects/<munged-cwd>/memory` pattern documented, not guessed);
 private-tool comments and README provenance genericized; owner fallback
 "the owner" → "Friend"; tracked plist git-rm'd (setup.sh generates it);
 `data/` ships empty/fresh; memory-weights/birth/notified absent;
 `cron_check.py` deleted; `.DS_Store`s removed + gitignored.
 Should: docs keep the build-diary narrative, scrubbed of real paths/names;
-DEFAULT_TZ → "UTC" fallback (WALLCLOCK_TZ env stays); pytest_cache gitignored.
+DEFAULT_TZ → "UTC" fallback (old project's TZ env var stays, for now); pytest_cache gitignored.
 Optional (decided): test fixture names → neutral; SETUP.md example
 `--name YourName`.
 
@@ -142,8 +142,8 @@ Optional (decided): test fixture names → neutral; SETUP.md example
 - CLI: `bin/sundial` (verbs unchanged: now/remember/due/done/ask/answered).
 - launchd label + plist: `com.sundial.watcher`. Applet: `Sundial.app`,
   notification title "Sundial". `setup.sh` and SETUP.md updated to match.
-- Env vars keep the `WALLCLOCK_*` names? NO — public uses `SUNDIAL_TZ`,
-  `SUNDIAL_MEMORY_DIR` (private repo keeps WALLCLOCK_* until it re-syncs).
+- Env vars keep the old project's prefix? NO — public uses `SUNDIAL_TZ`,
+  `SUNDIAL_MEMORY_DIR` (private repo keeps its own prefix until it re-syncs).
 
 ### README (the flag)
 Title + tagline ("a sense of time for AI agents — local-first,

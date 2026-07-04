@@ -8,6 +8,15 @@ you when something ripens, and a launchd watcher that fires desktop
 notifications even when no session is open. Everything is plain JSON on disk
 under `data/` — no network, no dependencies.
 
+A ripe nudge waits for a natural pause (you stop typing or switch apps)
+before it delivers, instead of firing mid-keystroke. Sound courtesy reads
+your presence, not the clock: chimes/speech mute when the screen is locked
+or you've been away 30+ minutes, but popups and detection run 24/7 — there
+are no quiet hours. The same watcher also notices meetings (including
+Meet-in-Chrome, via WebRTC assertions) and new folders on your Desktop, and
+offers to help — capped and deduped, never spammy — while quietly logging a
+Habit Ledger of your rhythms for later.
+
 ## Prerequisites
 
 - macOS (launchd + `osascript` + `osacompile` are required; there is no
@@ -25,10 +34,11 @@ cd sundial
 
 `--fresh` matters: it starts a **new agent identity** — a new `birth.json`
 (the agent's date of birth), empty commitments and session ledger, and
-cleared notify state. Never copy the previous owner's `data/` onto a new
-machine and skip `--fresh`; that hands the new agent someone else's age,
-history, and half-fired nudges. If `data/birth.json` is already absent,
-`--fresh` is implied automatically.
+cleared notify/presence/opportunity/habit state (no stale meeting, folder,
+or offer history from a previous owner). Never copy the previous owner's
+`data/` onto a new machine and skip `--fresh`; that hands the new agent
+someone else's age, history, and half-fired nudges. If `data/birth.json` is
+already absent, `--fresh` is implied automatically.
 
 Flags:
 
@@ -78,6 +88,31 @@ Flags:
 - Tell the receiving agent about the blocking-question protocol: when it's
   stuck waiting on you, it should run `sundial ask "..."` to arm a
   10/20/50-minute nudge ladder instead of just sitting silent.
+- Open meeting/folder offers surface automatically in the `<sundial>` and
+  `<sundial-tick>` context blocks — no separate command needed.
+
+## Optional config
+
+Drop these in `data/` any time; the watcher reads them fresh each cycle
+(none are required):
+
+- `meeting_apps.txt` — one app name per line, added to the meeting-detection
+  allowlist (default: `zoom.us`, Microsoft Teams, FaceTime, Webex, Skype)
+- `watch_roots.txt` — one folder path per line to watch for new subfolders
+  (default: `~/Desktop`)
+- `chime.txt` — `off`, or a float to scale nudge-sound volume (same as
+  `--silent` above)
+- `speak.txt` — voice name (or empty) to speak the final rung aloud (same as
+  `--speak` above)
+
+## Optional: menu-bar face
+
+For an at-a-glance presence/asks/offers readout without opening a session,
+install [SwiftBar](https://github.com/swiftbar/SwiftBar), copy
+`contrib/sundial.30s.sh` into its plugin folder, and set the `SUNDIAL_HOME`
+environment variable to this project's path (SwiftBar copies plugin scripts
+out of the repo, so the script can't resolve its own location). The plugin
+is read-only — it never writes to `data/` or signals the watcher.
 
 ## Uninstall
 

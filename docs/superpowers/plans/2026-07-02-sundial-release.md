@@ -45,7 +45,7 @@ Expected: full tree (bin cli data docs hooks lib setup.sh SETUP.md tests watcher
   - README "Reused logic" section → `## Provenance` with one line: `Timezone and metering logic adapted from internal utilities; rewritten standalone here.`
   - Docs sweep (`docs/superpowers/**/*.md`): dev-machine paths generalized to `~`-relative notation; the owner's and second user's personal names replaced with role labels; lines naming unrelated private internal tools dropped; the launchd label generalized to `com.sundial.watcher`.
   - `tests/test_wallclock.py`: personal-name fixture strings replaced with a neutral name (`"Ada"`); SETUP.md example flag genericized to `--name YourName`.
-  - Env renames everywhere: the private repo's `WALLCLOCK_TZ` / `WALLCLOCK_MEMORY_DIR` names → `SUNDIAL_TZ` / `SUNDIAL_MEMORY_DIR` (code + docs + setup.sh).
+  - Env renames everywhere: the private repo's old-prefix `*_TZ` / `*_MEMORY_DIR` names → `SUNDIAL_TZ` / `SUNDIAL_MEMORY_DIR` (code + docs + setup.sh).
   - `.gitignore`: ensure it covers `data/` live files (keep existing entries), `.pytest_cache/`, `.DS_Store`, `watcher/Sundial.app/` (renamed in Task 2 — add both `Wall Clock.app` and `Sundial.app` lines now).
 
 - [ ] **Step 3: Verify**

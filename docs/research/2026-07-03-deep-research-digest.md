@@ -87,3 +87,22 @@ quality vs. nudge quality; both live.)
 - Attelia et al. survey: arxiv.org/pdf/1711.10171
 - Windows toasts: learn.microsoft.com/en-us/windows/apps/develop/notifications/app-notifications/app-notifications-content
 - ACP: agentclientprotocol.com/protocol/v1/overview
+
+## Addendum (2026-07-03 PM): verified competitive facts from an external report
+
+An unsourced external report made 4 competitive claims; fact-check killed 3.
+The survivors, verified against primary sources:
+- **Cloudflare Agents `waitForApproval()`** (merged 2026-01-28, cloudflare/agents#799;
+  docs: developers.cloudflare.com/agents/concepts/human-in-the-loop/) — durable
+  cloud-side approval gates, timeouts "hours, days, or weeks". Positioning
+  contrast: parks-and-waits passively vs our local absence measurement +
+  autonomy contract.
+- **openclaw/openclaw#52147** (real, closed 2026-03): hardcoded
+  DEFAULT_AGENT_TIMEOUT_SECONDS misclassifies tool-execution time as LLM
+  timeout → wrongful failover. Evidence of industry time-blindness (cannot
+  distinguish activity types) — demand-signal for agent time-sense, though
+  NOT about waiting-on-human (the report's framing swapped that in).
+Rejected as confabulated: LiveKit "park+Slack" (only an open feature request
+exists, livekit/agents#2367); CreateOS "Review Context Packets" (company and
+"approval gates" phrase real; the mechanism name invented; CV-governance
+product, not agent orchestration).

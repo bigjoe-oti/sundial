@@ -1,25 +1,32 @@
 #!/usr/bin/env python3
 """Sundial — always-on local watcher.
 
-Runs via launchd even when no Claude session is open. Checks for commitments
-that have come due and fires a LOCAL macOS desktop notification, once per item.
-Fully local: notifications go through /usr/bin/osascript (built in), never a
-cloud relay. Launch-shy: one ping per commitment, quiet hours respected.
+Runs via launchd 24/7, even when no Claude session is open. Checks for
+commitments that have come due and fires a LOCAL macOS desktop notification,
+once per item. Fully local: notifications go through /usr/bin/osascript
+(built in), never a cloud relay. Launch-shy: one ping per commitment. Sound
+courtesy reads presence, not the clock: chimes/speech mute when the screen
+is locked or you've been away 30+ minutes; popups and detection run around
+the clock.
 
 Usage:
-  watcher.py            normal cycle (launchd runs this); respects quiet hours
-  watcher.py --force    run the cycle ignoring quiet hours (for testing)
+  watcher.py            normal cycle (launchd runs this); runs any hour
+  watcher.py --force    legacy flag, now a no-op (cycles always run)
   watcher.py --test     fire one test notification to prove the channel
 """
 
 import subprocess
 import sys
+import time
+import uuid
+from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import core  # noqa: E402
 
 import presence  # noqa: E402  (same directory)
+import opportunities  # noqa: E402  (same directory)
 
 UNSEEN_OFFSETS = (600, 1200, 3000)   # 10/20/50 min of not-seeing-the-chat
 ELSEWHERE_WEIGHT = 0.5               # two busy minutes = one absent minute
@@ -29,10 +36,14 @@ PRESENCE_FILE = core.DATA / "presence.json"
 
 OSASCRIPT = "/usr/bin/osascript"
 NOTIFIED = core.DATA / "notified.json"
-NOTIFY_START, NOTIFY_END = 8, 22  # waking hours (local); stay silent outside
+SOUND_AWAY_MAX_S = 1800  # 30 min: mute audio once away this long (screen-lock mutes sooner)
 NOTIFIED_TTL_DAYS = 7  # sweep closed commitments' entries once this stale
 
 RUNG_OFFSETS = (0, 600, 2400)  # seconds after due_at -> T0+10/20/50min when due=T0+10m
+
+BREAKPOINT_IDLE_S = 15   # named assumption: tuned during the proving week
+DEFER_MAX_S = 180        # bounded deferral window (research-backed)
+DEFER_POLL_S = 10
 
 
 def owner_name() -> str:
@@ -160,6 +171,57 @@ def sample_presence() -> dict:
     return {"state": state, "idle_s": idle, "front_app": front}
 
 
+MEETING_MAX_PLAUSIBLE_S = 4 * 3600   # beyond this the machine slept, not met
+
+OFFER_POOL = {
+    "meeting-start": (
+        "{owner}, meeting detected on {app}. Want minutes? Say the word in chat and hand me the transcript or your notes after.",
+        "A {app} meeting just began. If you want an MOM out of it, I'm in — just tell me in chat.",
+    ),
+    "meeting-end": (
+        "Meeting over ({duration_m}m on {app}). Hand me notes, a transcript, or a recording path and I'll draft the minutes.",
+        "{owner}, that was {duration_m} minutes of {app}. Want the MOM drafted? Drop me the material in chat.",
+    ),
+    "meeting-end-stale": (
+        "That {app} meeting wrapped a while back — want minutes from any notes you have?",
+        "{owner}, an old {app} meeting finally closed out. If notes exist, I can still draft the MOM in chat.",
+    ),
+}
+
+
+def sample_assertions_raw() -> str:
+    """One pmset assertions dump per cycle. Tests monkeypatch THIS. Kept as
+    the raw string (not pre-parsed into a set) because run_cycle needs two
+    different views of it: display-sleep procs (asserting_display_procs) AND
+    WebRTC-call procs (assertion_triples -> webrtc_procs) -- a dedicated app
+    like zoom.us and a browser tab running Google Meet are told apart by
+    which of those two a proc shows up in."""
+    return presence.assertions_raw()
+
+
+def sample_screen_locked() -> "bool | None":
+    """One screen-lock sample per cycle. Tests monkeypatch THIS function."""
+    return presence.screen_locked()
+
+
+def sample_net() -> "dict | None":
+    """One vnstat sample per cycle. Tests monkeypatch THIS function."""
+    return presence.net_sample()
+
+
+def sound_allowed(state, prev_presence: dict, now) -> bool:
+    """Courtesy reads the human, not the clock: no sounds when the screen
+    is locked or the human has been away half an hour+. Popups are silent
+    pixels and always allowed; this gates ONLY audio."""
+    if sample_screen_locked() is True:
+        return False
+    if state == "away":
+        since = core.parse_iso((prev_presence or {}).get("since"))
+        if since is not None and (now - since).total_seconds() >= SOUND_AWAY_MAX_S:
+            return False
+    return True
+
+
 def accrue(entry: dict, state, now, created) -> None:
     """Advance an item's unseen/here clocks by the gap since last cycle.
     A gap far beyond the cycle interval means the machine slept: sleep
@@ -251,12 +313,15 @@ def _spawn(cmd) -> None:
                      stderr=subprocess.DEVNULL)
 
 
-def chime(kind, state) -> None:
+def chime(kind, state, audible=True) -> None:
     """Subtle escalating sound beside the popup. HERE: silent for rungs 1-2
     and the return nudge -- but rung 3 (the final/autonomy-consequence fire)
     always plays, since silence there would hide the moment that matters
     most. ELSEWHERE: whisper (x0.6). data/chime.txt: 'off' silences, a float
-    scales."""
+    scales. `audible=False` (screen locked or long away) mutes unconditionally
+    -- courtesy reads presence, not the clock."""
+    if not audible:
+        return
     try:
         if kind not in CHIME_MAP:
             return
@@ -283,8 +348,11 @@ def chime(kind, state) -> None:
         pass
 
 
-def speak_final(message: str) -> None:
-    """Opt-in spoken final rung: only when data/speak.txt exists."""
+def speak_final(message: str, audible=True) -> None:
+    """Opt-in spoken final rung: only when data/speak.txt exists.
+    `audible=False` mutes unconditionally, same courtesy gate as chime()."""
+    if not audible:
+        return
     try:
         voice = (core.DATA / "speak.txt").read_text(encoding="utf-8").strip()
     except Exception:
@@ -367,14 +435,49 @@ def _sweep_notified(notified: dict, open_ids: set, now) -> bool:
     return bool(stale)
 
 
+def wait_for_breakpoint(sampler, sleeper, start_front, *,
+                        max_s=DEFER_MAX_S, poll_s=DEFER_POLL_S,
+                        idle_only=False) -> "tuple[str, float]":
+    """Bounded deferral: hold a ripe delivery until a natural task
+    breakpoint. Polls `sampler()` (a sample_presence-shaped dict) every
+    `poll_s` seconds via `sleeper`, up to `max_s`. Returns (reason, elapsed):
+      pause   -- input went quiet (idle >= BREAKPOINT_IDLE_S); true on the
+                 FIRST sample if the human is already mid-pause
+      switch  -- frontmost app changed from `start_front` (suppressed when
+                 idle_only: the 2-state degrade has no app sensor)
+      bound   -- window expired; fire regardless (the honesty rail)
+      degrade -- sensors failed mid-watch; fire now rather than guess
+    Injectable sampler/sleeper keep this fully testable without real time."""
+    elapsed = 0.0
+    while True:
+        snap = sampler()
+        if snap.get("state") is None:
+            return "degrade", elapsed
+        idle = snap.get("idle_s")
+        if idle is not None and idle >= BREAKPOINT_IDLE_S:
+            return "pause", elapsed
+        front = snap.get("front_app")
+        if (not idle_only and front and start_front
+                and front != start_front):
+            return "switch", elapsed
+        if elapsed >= max_s:
+            return "bound", elapsed
+        sleeper(poll_s)
+        elapsed += poll_s
+
+
 def run_cycle(force: bool = False) -> None:
+    """`force` is accepted for call-site compatibility but no longer gates
+    anything: cycles run 24/7 now. Sound courtesy reads presence, not the
+    clock -- see sound_allowed()."""
     local = core.now_local()
-    if not force and not (NOTIFY_START <= local.hour < NOTIFY_END):
-        return  # quiet hours: stay silent
     now = core.now_utc()
     snap = sample_presence()
     state, app = snap["state"], snap["front_app"]
     prev = record_presence(snap, now)
+    audible = sound_allowed(snap["state"], {"state": snap["state"],
+        "since": (prev.get("since") if prev.get("state") == snap["state"]
+                  else now.isoformat())}, now)
     returned = (prev.get("state") == "away"
                 and snap["state"] in ("here", "elsewhere"))
     away_since = core.parse_iso(prev.get("since")) if returned else None
@@ -383,6 +486,7 @@ def run_cycle(force: bool = False) -> None:
     if not isinstance(notified, dict):
         notified = {}
     dirty = False
+    batch = []          # (commitment, entry, rung, message, ceiling_forced)
     for c, _delta in core.due_commitments(0):  # overdue / due-now only
         try:
             entry = migrate_entry(notified.get(c["id"]))
@@ -398,26 +502,157 @@ def run_cycle(force: bool = False) -> None:
                     msg = pick_message(c.get("id", ""), RETURN_POOL,
                                        text=c.get("text", ""), away_m=away_m)
                     desktop_notify("Sundial", msg)
-                    chime("return", snap["state"])
+                    chime("return", snap["state"], audible)
                     entry["count"], entry["last"] = ripe, now.isoformat()
                     notified[c["id"]] = entry
                     dirty = True
+                    opportunities.log_habit({
+                        "kind": "fire", "rung": "return", "state": snap["state"],
+                        "defer_reason": "none", "deferred_s": 0.0,
+                        "muted": (not audible)})
                 continue  # return-nudge replaces the regular ping this cycle
             hit = pending_ping(c, entry, now, state, app)
             if hit is None:
                 continue
-            rung, message = hit
-            if state == "here" and not wall_ceiling_passed(c, now):
+            ceiling = wall_ceiling_passed(c, now)
+            if state == "here" and not ceiling:
                 continue  # hold: they can see the chat; ceiling overrides
-            desktop_notify("Sundial", message)
-            chime(rung, state)
-            if rung == 3:
-                speak_final(message)
-            entry["count"], entry["last"] = rung, now.isoformat()
-            notified[c["id"]] = entry
-            dirty = True
+            rung, message = hit
+            batch.append((c, entry, rung, message, ceiling))
         except Exception:
             continue
+
+    if batch:
+        deferred_s, reason = 0.0, "none"
+        if state in ("elsewhere", "present") or (
+                state == "here" and any(b[4] for b in batch)):
+            reason, deferred_s = wait_for_breakpoint(
+                sample_presence, time.sleep, app,
+                idle_only=(state == "present"))
+            still_open = {x.get("id") for x in core.load_commitments()
+                          if x.get("status") == "open"}
+            batch = [b for b in batch if b[0].get("id") in still_open]
+        fire_now = core.now_utc()
+        for c, entry, rung, message, _ceiling in batch:
+            try:
+                desktop_notify("Sundial", message)
+                chime(rung, state, audible)
+                if rung == 3:
+                    speak_final(message, audible)
+                entry["count"], entry["last"] = rung, fire_now.isoformat()
+                entry["deferred_s"], entry["defer_reason"] = deferred_s, reason
+                notified[c["id"]] = entry
+                dirty = True
+                opportunities.log_habit({
+                    "kind": "fire", "rung": rung, "state": state,
+                    "defer_reason": reason, "deferred_s": deferred_s,
+                    "muted": (not audible)})
+            except Exception:
+                continue
+
+    # --- opportunities: detect, offer, observe (never breaks commitments) --
+    try:
+        # presence-transition habit
+        if prev.get("state") != snap["state"]:
+            opportunities.log_habit({"kind": "presence",
+                                     "from": prev.get("state"),
+                                     "to": snap["state"],
+                                     "front": snap.get("front_app")})
+        today = local.strftime("%Y-%m-%d")
+        # net telemetry: one vnstat sample per cycle. None (no vnstat, no
+        # traffic data) degrades silently -- no habit line, no crash.
+        net = sample_net()
+        if net is not None:
+            opportunities.log_habit({"kind": "net", "iface": net["iface"],
+                                     "rx_Bps": net["rx_Bps"],
+                                     "tx_Bps": net["tx_Bps"]})
+        # meetings
+        ms = core.read_json(core.DATA / "meeting_state.json", {})
+        active = ms.get("active") if isinstance(ms, dict) else None
+        raw = sample_assertions_raw()
+        display_procs = presence.asserting_display_procs(raw)
+        webrtc = opportunities.webrtc_procs(presence.assertion_triples(raw))
+        events, new_active = opportunities.detect_meeting(
+            display_procs, webrtc, active, now)
+        core.write_json(core.DATA / "meeting_state.json",
+                        {"active": new_active})
+        if new_active is not None and net is not None:
+            # Owner-Model material: real calls show sustained symmetric
+            # traffic -- corroborates the meeting sensor every cycle it's
+            # active, not just on the start/end transitions below.
+            opportunities.log_habit({"kind": "meeting-net",
+                                     "app": new_active.get("app"),
+                                     "rx_Bps": net["rx_Bps"],
+                                     "tx_Bps": net["tx_Bps"]})
+        for evt in events:
+            kind = evt["kind"]
+            stale = (kind == "meeting-end"
+                     and evt.get("duration_s", 0) > MEETING_MAX_PLAUSIBLE_S)
+            # a start makes other-app start offers moot (single active
+            # meeting assumption); an end answers ITS OWN app's start offer.
+            # Either way the open meeting-start records to expire are:
+            expire_start_for = ("other" if kind == "meeting-start" else "same")
+            with core._ledger_lock():
+                items = opportunities.load_ledger()
+                dirty_l = False
+                for r in items:
+                    if (r.get("kind") != "meeting-start"
+                            or r.get("status") != "offered"):
+                        continue
+                    same_app = (r.get("evidence", {}).get("app")
+                                == evt.get("app"))
+                    if same_app == (expire_start_for == "same"):
+                        r["status"] = "expired"
+                        dirty_l = True
+                if dirty_l:
+                    opportunities.save_ledger(items)
+            fields = {"app": evt.get("app", "?")}
+            pool_key = kind
+            if kind == "meeting-end":
+                if stale:
+                    pool_key = "meeting-end-stale"   # duration would mislead
+                else:
+                    fields["duration_m"] = int(evt.get("duration_s", 0) // 60)
+            msg = pick_message(uuid.uuid4().hex[:8], OFFER_POOL[pool_key],
+                               text="", **fields)
+            expiry = ((now + timedelta(seconds=1800)).isoformat()
+                      if kind == "meeting-end" else None)
+            evidence = dict(evt)
+            evidence.pop("kind", None)
+            if kind == "meeting-start":
+                # net snapshot rides along as corroborating evidence; the
+                # started timestamp already makes evidence unique per real
+                # meeting, so this extra key never affects dedup.
+                evidence["net"] = net
+            # evidence carries started/ended timestamps -> each real meeting
+            # is unique; dedup only stops same-event re-offers
+            rec = opportunities.add_opportunity(kind, evidence, msg, expiry)
+            if rec and not stale and opportunities.offer_allowed(today):
+                desktop_notify("Sundial", msg)
+                chime("return", state, audible)
+                opportunities.count_offer(today)
+            if rec:
+                habit = {"kind": "offer", "opp": kind, "app": evt.get("app")}
+                if stale:
+                    habit["stale"] = True
+                opportunities.log_habit(habit)
+        # curiosity
+        kf = core.read_json(core.DATA / "known_folders.json", {})
+        if not isinstance(kf, dict):
+            kf = {}
+        c_events, new_kf = opportunities.detect_new_folders(
+            opportunities.watch_roots(), kf)
+        core.write_json(core.DATA / "known_folders.json", new_kf)
+        for evt in c_events:
+            rec = opportunities.add_opportunity(
+                "curiosity", {"folder": evt["folder"]}, evt["folder"],
+                (now + timedelta(seconds=86400)).isoformat())
+            if rec:
+                opportunities.log_habit({"kind": "curiosity",
+                                         "folder": evt["folder"]})
+    except Exception:
+        pass
+
     open_ids = {c.get("id") for c in core.load_commitments()
                 if c.get("status") == "open"}
     if _sweep_notified(notified, open_ids, now):

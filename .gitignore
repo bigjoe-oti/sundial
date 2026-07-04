@@ -16,5 +16,11 @@ data/presence.json
 data/watcher.log
 data/.lock
 data/*.corrupt-*
+data/meeting_state.json
+data/known_folders.json
+data/opportunities.json
+data/opportunity_prefs.json
+data/habits.jsonl
+data/habits.1.jsonl
 .pytest_cache/
 .DS_Store

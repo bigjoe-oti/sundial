@@ -26,7 +26,19 @@ def is_machine_event(prompt: str) -> bool:
 
 
 def build_context(core) -> str:
-    core.close_awaiting()
+    closed = core.close_awaiting_detailed()
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "watcher"))
+        import opportunities
+        now0 = core.now_utc()
+        for c in closed:
+            created = core.parse_iso(c.get("created_at"))
+            if created is not None:
+                opportunities.log_habit({
+                    "kind": "answered", "id": c.get("id"),
+                    "latency_s": (now0 - created).total_seconds()})
+    except Exception:
+        opportunities = None
 
     last_path = core.DATA / "last_prompt.json"
     prev = core.read_json(last_path, {})
@@ -39,7 +51,18 @@ def build_context(core) -> str:
     if prev_ts is not None:
         delta = core.humanize_delta((now - prev_ts).total_seconds())
         parts.append(f"Elapsed since your previous prompt: {delta}.")
-    return "<sundial-tick>" + " ".join(parts) + "</sundial-tick>"
+    out = "<sundial-tick>" + " ".join(parts) + "</sundial-tick>"
+    try:
+        if opportunities is not None:
+            live = opportunities.open_offers(core.now_utc())[:5]
+            if live:
+                lines = [f"- [{r['kind']}] {str(r.get('offer_msg',''))[:200]}"
+                         for r in live]
+                out += ("\n<opportunities>\n" + "\n".join(lines)
+                        + "\n</opportunities>")
+    except Exception:
+        pass
+    return out
 
 
 def main():

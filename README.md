@@ -37,6 +37,11 @@ zero model calls.
   backstop: 90 wall-minutes forces the final rung, whatever the sensors say
 ```
 
+- **Waits for the pause, not the tick.** A ripe nudge doesn't fire
+  mid-keystroke: it holds up to 3 minutes for you to pause typing or switch
+  apps, then delivers into that natural gap. Bounded deferral, straight from
+  the interruption-science literature — every fired nudge records how long
+  it politely waited.
 - **Knows away from busy from listening.** Two zero-permission macOS signals:
   seconds since your last keystroke (`HIDIdleTime`) and the frontmost app
   *name* (`lsappinfo`). In another app, the nudge may tease you by name:
@@ -44,10 +49,12 @@ zero model calls.
 - **Greets your return.** One welcome-back popup when you come back with
   something ripened — *"While you were away (25m): …"* — instead of a pile
   of stale ones.
-- **Escalates in sound, too.** Tink → Glass → Hero chimes rise with the
-  rungs (Purr on return), whispered when you're merely busy, silent when
-  you're right here. Optionally, the final rung literally speaks
-  (`--speak`).
+- **Escalates in sound, too — with manners.** Tink → Glass → Hero chimes
+  rise with the rungs (Purr on return), whispered when you're merely busy,
+  silent when you're right here. Optionally, the final rung literally
+  speaks (`--speak`). Sound courtesy reads presence, not the clock: chimes
+  and speech mute entirely once the screen is locked or you've been away
+  30+ minutes — popups and detection keep running regardless.
 - **Ends in autonomy, not limbo.** The final rung's contract, printed on the
   notification itself: *proceeding on my judgment or standing down.* The
   agent reads both clocks — how long you were gone vs. how long you sat
@@ -78,6 +85,37 @@ sundial due / answered / done <id>
 sundial remember "text" --due 2026-08-01
 ```
 
+## What else it notices
+
+The watcher is already sampling presence every cycle — this puts that
+sampling to work, deterministically, no LLM in the loop:
+
+- **Meeting offers.** Zoom, Teams, FaceTime, Webex, Skype in the foreground —
+  or a live WebRTC call in *any* app, so Google Meet in a Chrome tab counts
+  too — triggers a one-time offer to draft minutes when it starts, and again
+  when it ends. A meeting that closed out long after it plausibly ran (the
+  machine slept through it) gets a softer, duration-free offer instead of a
+  made-up number.
+- **Folder curiosity.** New top-level folders under `~/Desktop` (or your own
+  `watch_roots.txt`) get one gentle mention, capped at three per cycle so a
+  bulk unzip doesn't flood you.
+- **The Habit Ledger.** Every fire, mute, presence transition, and offer logs
+  one line to `data/habits.jsonl` (rotated at 5MB) — raw material for a
+  future Owner Model. Nothing is acted on yet; it only observes.
+- **Manners, not spam.** At most 5 offers a day, deduped by evidence so the
+  same meeting or folder never offers twice. Open offers also ride along in
+  the `<sundial>` / `<sundial-tick>` context blocks, so the agent can act on
+  one without you repeating yourself in chat.
+
+## Optional: a menu-bar face
+
+Want presence, open asks, and offers at a glance without opening a session?
+Install [SwiftBar](https://github.com/swiftbar/SwiftBar), copy
+`contrib/sundial.30s.sh` into its plugin folder, and set `SUNDIAL_HOME` to
+wherever you cloned this project — SwiftBar copies plugin scripts out of the
+repo, so the script can't find its own path and needs to be told. Read-only:
+it never writes to `data/` or signals the watcher.
+
 ## Honesty rails
 
 - **No LLM decides when to wake.** Ripeness is date arithmetic. (Research
@@ -88,8 +126,13 @@ sundial remember "text" --due 2026-08-01
   git-ignored: live state is not history.
 - **The sensors can be wrong, so they only soften.** A 90-minute wall
   ceiling guarantees the final rung regardless of what presence believes.
-- **Max three pings per question, ever.** Quiet hours (08:00–22:00)
-  respected; a night's missed rungs collapse into one morning catch-up.
+- **Max three pings per question, ever.** No quiet hours — the watcher runs
+  every 10 minutes around the clock. What's gated is sound, not delivery:
+  chimes and speech mute when the screen is locked or you've been away 30+
+  minutes; popups and detection never sleep.
+- **Opportunity offers are capped and deduped too.** At most 5 a day, one
+  offer per real meeting or new folder — never a repeat nag over the same
+  evidence.
 - **Memory decay is computed, never enacted.** ACT-R-style scores over the
   agent's memory files are recorded for future use; nothing auto-forgets.
 
@@ -147,5 +190,9 @@ Timezone and metering logic adapted from internal utilities; rewritten
 standalone here. Built in one day, live, by an agent wearing the clock it
 was building — four of its design rails exist because the thing caught its
 own failure modes in production while under construction.
+
+---
+
+<p align="center">Built with obsession by <a href="https://jservo.com"><b>J. Servo</b></a> — agentic systems that keep their promises.</p>
 
 MIT © 2026 J. Servo LLC
