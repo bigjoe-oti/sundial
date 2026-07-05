@@ -36,6 +36,7 @@ ELSEWHERE_WEIGHT = 0.5               # two busy minutes = one absent minute
 WALL_CEILING_S = 5400                # 90 min: final rung fires regardless
 CYCLE_S = 600
 PRESENCE_FILE = core.DATA / "presence.json"
+WELCOME_MIN_AWAY_S = 1200   # 20 min: a shorter return is a glance, not a departure
 
 OSASCRIPT = "/usr/bin/osascript"
 NOTIFIED = core.DATA / "notified.json"
@@ -167,11 +168,19 @@ def migrate_entry(value) -> dict:
 
 
 def sample_presence() -> dict:
-    """One presence snapshot per cycle. Tests monkeypatch THIS function."""
+    """One presence snapshot per cycle. Tests monkeypatch THIS function.
+    A locked screen is the hardest 'away' signal there is and dominates the
+    idle/front-app heuristic outright: a lidless, humming Mac kept idle time
+    low with background work can otherwise read as 'present' across a long
+    absence -- lock cannot be fooled that way."""
     idle = presence.idle_seconds()
     front = presence.front_app() if idle is not None else None
     state = presence.derive_state(idle, front, presence.cli_apps(core.DATA))
-    return {"state": state, "idle_s": idle, "front_app": front}
+    locked = sample_screen_locked()
+    if locked is True:
+        state = "away"
+    return {"state": state, "idle_s": idle, "front_app": front,
+            "locked": locked}
 
 
 MEETING_MAX_PLAUSIBLE_S = 4 * 3600   # beyond this the machine slept, not met
@@ -580,6 +589,27 @@ def run_cycle(force: bool = False) -> None:
                 and snap["state"] in ("here", "elsewhere"))
     away_since = core.parse_iso(prev.get("since")) if returned else None
     away_m = int((now - away_since).total_seconds() // 60) if away_since else 0
+    # Welcome-back bridge (silent side): on a real return past the glance
+    # threshold, drop a one-shot welcome_back.json for the prompt_submit hook
+    # to read on the human's next keystroke. This writes NO notification --
+    # the CLI greeting rides their own keystroke, so it can never be
+    # unsolicited noise. Path from core.DATA at call time (test isolation).
+    if returned and away_since is not None:
+        away_s = (now - away_since).total_seconds()
+        if away_s >= WELCOME_MIN_AWAY_S:
+            try:
+                # Serialize with the hook's claim so a write can't be clobbered
+                # by a mid-claim consume. log_habit stays OUTSIDE the lock --
+                # flock is not re-entrant across fds, nesting would deadlock.
+                with core._ledger_lock():
+                    core.write_json(core.DATA / "welcome_back.json", {
+                        "unlocked_at": now.isoformat(), "away_s": away_s,
+                        "front_app": snap["front_app"], "consumed": False})
+                opportunities.log_habit({"kind": "welcome-back",
+                                         "away_s": away_s,
+                                         "front": snap["front_app"]})
+            except Exception:
+                pass
     notified = core.read_json(NOTIFIED, {})
     if not isinstance(notified, dict):
         notified = {}

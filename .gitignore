@@ -25,5 +25,11 @@ data/habits.1.jsonl
 data/build_state.json
 data/owner_model.json
 data/opportunities/
+# Blanket: all live agent state under data/ is runtime-only, never tracked
+# (created by the watcher/setup). Subsumes the enumerated entries above and
+# catches new files like welcome_back.json without another edit.
+data/*.json
+data/*.jsonl
+data/*.txt
 .pytest_cache/
 .DS_Store

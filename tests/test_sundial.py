@@ -964,6 +964,85 @@ class TestAbsenceClock(unittest.TestCase):
                  watcher.sample_assertions_raw, watcher.sample_net,
                  watcher.sample_recent_fs, watcher.sample_builds) = orig
 
+    def test_sample_presence_lock_dominates(self):
+        # A locked screen overrides the idle/front-app heuristic: even with
+        # recent input and a non-CLI app frontmost (normally "elsewhere"),
+        # a locked screen reads "away". This is the fix for the lidless-Mac
+        # false-present failure.
+        p = watcher.presence
+        orig = (watcher.sample_screen_locked, p.idle_seconds,
+                p.front_app, p.cli_apps)
+        try:
+            p.idle_seconds = lambda: 2.0
+            p.front_app = lambda: "Figma"
+            p.cli_apps = lambda data_dir: ()
+            watcher.sample_screen_locked = lambda: True
+            snap = watcher.sample_presence()
+            self.assertEqual(snap["state"], "away")
+            self.assertIs(snap["locked"], True)
+            watcher.sample_screen_locked = lambda: False
+            self.assertEqual(watcher.sample_presence()["state"], "elsewhere")
+        finally:
+            (watcher.sample_screen_locked, p.idle_seconds,
+             p.front_app, p.cli_apps) = orig
+
+    def _run_cycle_isolated(self, dd, presence_since_s):
+        """Drive one run_cycle with all live seams stubbed and a prior
+        presence of away since `presence_since_s` ago, returning fresh into
+        Figma. Returns the welcome_back.json dict ({} if never written)."""
+        orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                watcher.PRESENCE_FILE, watcher.sample_presence,
+                watcher.desktop_notify, watcher.wait_for_breakpoint,
+                watcher.sample_assertions_raw, watcher.sample_net,
+                watcher.sample_recent_fs, watcher.sample_builds)
+        core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
+        watcher.NOTIFIED = dd / "notified.json"
+        watcher.PRESENCE_FILE = dd / "presence.json"
+        watcher.desktop_notify = lambda t, m: True
+        watcher.wait_for_breakpoint = lambda *a, **k: ("bound", 0.0)
+        watcher.sample_assertions_raw = lambda: ""
+        watcher.sample_net = lambda: None
+        watcher.sample_recent_fs = lambda: []
+        watcher.sample_builds = lambda: {}
+        try:
+            past = (core.now_utc()
+                    - timedelta(seconds=presence_since_s)).isoformat()
+            core.write_json(watcher.PRESENCE_FILE,
+                            {"state": "away", "since": past,
+                             "idle_s": 999.0, "front_app": None})
+            watcher.sample_presence = lambda: {"state": "elsewhere",
+                                               "idle_s": 2.0,
+                                               "front_app": "Figma",
+                                               "locked": False}
+            watcher.run_cycle(force=True)
+            return core.read_json(dd / "welcome_back.json", {})
+        finally:
+            (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+             watcher.PRESENCE_FILE, watcher.sample_presence,
+             watcher.desktop_notify, watcher.wait_for_breakpoint,
+             watcher.sample_assertions_raw, watcher.sample_net,
+             watcher.sample_recent_fs, watcher.sample_builds) = orig
+
+    def test_run_cycle_writes_welcome_back_on_real_return(self):
+        with tempfile.TemporaryDirectory() as d:
+            wb = self._run_cycle_isolated(Path(d), 1500)  # 25 min away
+            self.assertFalse(wb.get("consumed"))
+            self.assertGreaterEqual(wb.get("away_s"), 1200)
+            self.assertEqual(wb.get("front_app"), "Figma")
+
+    def test_run_cycle_no_welcome_back_below_threshold(self):
+        with tempfile.TemporaryDirectory() as d:
+            wb = self._run_cycle_isolated(Path(d), 300)  # 5 min: a glance
+            self.assertEqual(wb, {})  # never written
+
+    def test_run_cycle_welcome_back_at_threshold_boundary(self):
+        # away_s is measured from `since` (set 1200s ago) to a now that is
+        # necessarily >= 1200s later, so exactly-at-threshold writes.
+        with tempfile.TemporaryDirectory() as d:
+            wb = self._run_cycle_isolated(Path(d), watcher.WELCOME_MIN_AWAY_S)
+            self.assertFalse(wb.get("consumed"))
+            self.assertGreaterEqual(wb.get("away_s"), watcher.WELCOME_MIN_AWAY_S)
+
     def test_chime_commands_and_state_modifiers(self):
         with tempfile.TemporaryDirectory() as d:
             orig = (core.DATA, watcher._spawn)
@@ -1443,6 +1522,73 @@ class TestPromptSubmitHook(unittest.TestCase):
     def test_no_block_when_no_offers(self):
         block = prompt_submit.build_context(core)
         self.assertNotIn("<opportunities>", block)
+
+    def test_read_own_away_summary_last_and_stripped(self):
+        d = Path(self.tmp.name)
+        tx = d / "sess.jsonl"
+        tx.write_text("\n".join([
+            json.dumps({"type": "system", "subtype": "away_summary",
+                        "content": "Old recap. (disable recaps in /config)"}),
+            json.dumps({"type": "user", "message": {"content": "hi"}}),
+            json.dumps({"type": "system", "subtype": "away_summary",
+                        "content": "Latest recap. (disable recaps in /config)"}),
+        ]) + "\n", encoding="utf-8")
+        self.assertEqual(prompt_submit.read_own_away_summary(str(tx)),
+                         "Latest recap.")               # last one, tail stripped
+        self.assertIsNone(prompt_submit.read_own_away_summary(None))
+        empty = d / "empty.jsonl"
+        empty.write_text("", encoding="utf-8")
+        self.assertIsNone(prompt_submit.read_own_away_summary(str(empty)))
+
+    def test_read_own_away_summary_tolerates_malformed(self):
+        # Bare non-dict JSON, garbage lines, and a valid record interleaved:
+        # must never raise (it runs on the prompt path) and still find the
+        # last real away_summary.
+        d = Path(self.tmp.name)
+        tx = d / "sess.jsonl"
+        tx.write_text("\n".join([
+            "null",                               # valid JSON, not a dict
+            "42",                                 # valid JSON, not a dict
+            "{ this is not json",                 # unparseable
+            json.dumps(["a", "list"]),            # valid JSON, not a dict
+            json.dumps({"type": "system", "subtype": "away_summary",
+                        "content": "Survivor recap. (disable recaps in /config)"}),
+            "",                                   # blank
+        ]) + "\n", encoding="utf-8")
+        self.assertEqual(prompt_submit.read_own_away_summary(str(tx)),
+                         "Survivor recap.")
+
+    def test_welcome_back_injects_resume_and_consumes_once(self):
+        d = Path(self.tmp.name)
+        tx = d / "sess.jsonl"
+        tx.write_text(json.dumps(
+            {"type": "system", "subtype": "away_summary",
+             "content": "We were building the bridge. (disable recaps in /config)"}
+        ) + "\n", encoding="utf-8")
+        core.write_json(core.DATA / "welcome_back.json", {
+            "unlocked_at": core.now_utc().isoformat(), "away_s": 1500.0,
+            "front_app": "Figma", "consumed": False})
+        data = {"transcript_path": str(tx)}
+        block = prompt_submit.build_context(core, data)
+        self.assertIn("<presence-return>", block)
+        self.assertIn("We were building the bridge.", block)
+        self.assertIn("25m", block)                     # 1500s humanized
+        block2 = prompt_submit.build_context(core, data)
+        self.assertNotIn("<presence-return>", block2)   # fire once
+
+    def test_welcome_back_stale_consumes_silently(self):
+        old = (core.now_utc() - timedelta(seconds=2400)).isoformat()  # 40 min
+        core.write_json(core.DATA / "welcome_back.json", {
+            "unlocked_at": old, "away_s": 1500.0, "front_app": "Figma",
+            "consumed": False})
+        block = prompt_submit.build_context(core, {"transcript_path": None})
+        self.assertNotIn("<presence-return>", block)     # too stale to greet
+        wb = core.read_json(core.DATA / "welcome_back.json", {})
+        self.assertTrue(wb.get("consumed"))              # but consumed anyway
+
+    def test_no_presence_return_without_welcome_back(self):
+        block = prompt_submit.build_context(core)        # no data arg: back-compat
+        self.assertNotIn("<presence-return>", block)
 
 
 class TestSessionStartHook(unittest.TestCase):

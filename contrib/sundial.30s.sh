@@ -53,7 +53,11 @@ import json
 try:
     with open("'"$DATA_DIR"'/opportunities.json") as f:
         items = json.load(f)
-    n = sum(1 for o in items if o.get("status") == "offered")
+    # Only ACTIONABLE offers (meeting minutes, build follow-ups). Curiosity
+    # is passive context ("I noticed this file"), surfaced in the CLI
+    # <opportunities> block -- it must not inflate the menu-bar badge.
+    n = sum(1 for o in items
+            if o.get("status") == "offered" and o.get("kind") != "curiosity")
 except Exception:
     n = 0
 print(n)
