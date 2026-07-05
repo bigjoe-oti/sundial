@@ -18,5 +18,6 @@ case "$cmd" in
   decline)  exec python3 "$ROOT/cli/decline.py" "$@" ;;
   allow)    exec python3 "$ROOT/cli/allow.py" "$@" ;;
   owner)    exec python3 "$ROOT/cli/owner.py" "$@" ;;
-  *) echo "usage: sundial {now|remember|due|done|ask|answered|decline|allow|owner} [...]" >&2; exit 1 ;;
+  estimate) exec python3 "$ROOT/cli/estimate.py" "$@" ;;
+  *) echo "usage: sundial {now|remember|due|done|ask|answered|decline|allow|owner|estimate} [...]" >&2; exit 1 ;;
 esac

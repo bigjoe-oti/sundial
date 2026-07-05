@@ -2645,5 +2645,251 @@ class TestOwnerModel(unittest.TestCase):
                 core.DATA = orig
 
 
+class TestEstimatorHelpers(unittest.TestCase):
+    def test_parse_duration_forms(self):
+        import estimator
+        self.assertEqual(estimator.parse_duration("30m"), 1800.0)
+        self.assertEqual(estimator.parse_duration("1h"), 3600.0)
+        self.assertEqual(estimator.parse_duration("1800s"), 1800.0)
+        self.assertEqual(estimator.parse_duration("1800"), 1800.0)
+        self.assertEqual(estimator.parse_duration("1h30m"), 5400.0)
+        self.assertEqual(estimator.parse_duration("1.5h"), 5400.0)
+        self.assertIsNone(estimator.parse_duration(""))
+        self.assertIsNone(estimator.parse_duration(None))
+        self.assertIsNone(estimator.parse_duration("abc"))
+        # strict: garbage must NOT parse to a confidently-wrong number
+        self.assertIsNone(estimator.parse_duration("-30m"))   # leading sign
+        self.assertIsNone(estimator.parse_duration("30ms"))   # unknown unit
+        self.assertIsNone(estimator.parse_duration("1e3s"))   # sci notation
+        self.assertIsNone(estimator.parse_duration("1h -30m"))
+
+    def test_percentile_interpolates(self):
+        import estimator
+        v = [1.0, 2.0, 3.0, 4.0]
+        self.assertEqual(estimator.percentile(v, 0.0), 1.0)
+        self.assertEqual(estimator.percentile(v, 1.0), 4.0)
+        self.assertAlmostEqual(estimator.percentile(v, 0.5), 2.5)
+        self.assertEqual(estimator.percentile([7.0], 0.9), 7.0)
+        with self.assertRaises(ValueError):
+            estimator.percentile([], 0.5)
+
+
+class TestEstimatorCalibrate(unittest.TestCase):
+    def test_ratio_high_confidence(self):
+        import estimator
+        sample = [0.59, 0.60, 0.73, 0.85, 0.93, 1.75, 2.45]  # the 7 real ratios
+        r = estimator.calibrate(100.0, sample)
+        self.assertEqual(r["n"], 7)
+        self.assertEqual(r["confidence"], "high")
+        self.assertAlmostEqual(r["p50_s"], 85.0, places=5)      # 100 * 0.85
+        # P90 = linear-interp percentile at 0.9 of the 7 ratios:
+        # k=5.4 -> 1.75*0.6 + 2.45*0.4 = 2.03 (NOT the raw 1.75 value).
+        self.assertAlmostEqual(r["p90_s"], 203.0, places=5)
+
+    def test_ratio_small_n_widens_and_flags(self):
+        import estimator
+        r = estimator.calibrate(100.0, [0.8, 0.9])              # n=2
+        self.assertEqual(r["confidence"], "low")
+        self.assertAlmostEqual(r["p90_s"], 200.0, places=5)     # 100 * max(0.89, 2.0)
+        self.assertAlmostEqual(r["p50_s"], 85.0, places=0)      # still median-based
+
+    def test_ratio_zero_data_identity(self):
+        import estimator
+        r = estimator.calibrate(100.0, [])
+        self.assertEqual(r, {"p50_s": 100.0, "p90_s": 200.0, "n": 0,
+                             "confidence": "none"})
+
+    def test_absolute_mode_and_empty(self):
+        import estimator
+        r = estimator.calibrate(None, [600.0], absolute=True)   # 1 latency sample
+        self.assertEqual(r["confidence"], "low")
+        self.assertEqual(r["p50_s"], 600.0)
+        self.assertEqual(r["p90_s"], 1200.0)                    # max(600, 600*2)
+        empty = estimator.calibrate(None, [], absolute=True)
+        self.assertEqual(empty, {"p50_s": None, "p90_s": None, "n": 0,
+                                 "confidence": "none"})
+
+
+class TestEstimatorLedger(unittest.TestCase):
+    def _write(self, dd, lines):
+        (dd / "habits.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_reads_and_filters(self):
+        import estimator
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            self._write(dd, [
+                json.dumps({"kind": "estimate", "task": "a", "ratio": 0.8}),
+                "not json",                                   # skipped
+                json.dumps(42),                               # non-dict, skipped
+                json.dumps({"kind": "estimate", "task": "b", "ratio": None}),
+                json.dumps({"kind": "answered", "latency_s": 654.0}),
+                json.dumps({"kind": "net", "rx_Bps": 1.0}),   # irrelevant
+            ])
+            ev = estimator._read_habits(dd)
+            ratios, used = estimator._estimate_ratios(ev)
+            self.assertEqual(ratios, [0.8])                   # None-ratio dropped
+            self.assertIsNone(used)
+            self.assertEqual(estimator._answered_latencies(ev), [654.0])
+
+    def test_bucket_falls_back_below_threshold(self):
+        import estimator
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            self._write(dd, [json.dumps({"kind": "estimate", "task": f"t{i}",
+                                         "ratio": 1.0}) for i in range(6)]
+                        + [json.dumps({"kind": "estimate", "task": "b",
+                                       "ratio": 0.5, "bucket": "build"})])
+            ev = estimator._read_habits(dd)
+            ratios, used = estimator._estimate_ratios(ev, bucket="build")
+            self.assertIsNone(used)                           # only 1 'build' < 5
+            self.assertEqual(len(ratios), 7)                  # global fallback
+
+    def test_bucket_selected_when_enough(self):
+        import estimator
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            self._write(dd,
+                [json.dumps({"kind": "estimate", "task": f"g{i}", "ratio": 1.0})
+                 for i in range(3)]
+                + [json.dumps({"kind": "estimate", "task": f"b{i}",
+                               "ratio": 0.5, "bucket": "build"})
+                   for i in range(5)])                        # exactly BUCKET_MIN_N
+            ev = estimator._read_habits(dd)
+            ratios, used = estimator._estimate_ratios(ev, bucket="build")
+            self.assertEqual(used, "build")
+            self.assertEqual(ratios, [0.5] * 5)               # tagged subset only
+            out = estimator.estimate_execution(100.0, dd, bucket="build")
+            self.assertEqual(out["bucket"], "build")
+
+
+class TestEstimatorAPI(unittest.TestCase):
+    def _ledger(self, dd, ratios, latencies=()):
+        lines = [json.dumps({"kind": "estimate", "task": f"t{i}",
+                             "est_s": 100, "actual_s": 100 * r, "ratio": r})
+                 for i, r in enumerate(ratios)]
+        lines += [json.dumps({"kind": "answered", "latency_s": x})
+                  for x in latencies]
+        (dd / "habits.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_execution_matches_real_ratios(self):
+        import estimator
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            self._ledger(dd, [0.59, 0.60, 0.73, 0.85, 0.93, 1.75, 2.45])
+            r = estimator.estimate_execution(100.0, dd)
+            self.assertEqual(r["confidence"], "high")
+            self.assertAlmostEqual(r["p50_s"], 85.0, places=5)
+            self.assertIsNone(r["bucket"])
+
+    def test_review_thin_and_timeline_sums(self):
+        import estimator
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            self._ledger(dd, [0.8, 0.9, 1.0, 1.1, 1.2], latencies=[600.0])
+            rv = estimator.estimate_review(dd)
+            self.assertEqual(rv["confidence"], "low")          # n=1
+            self.assertEqual(rv["p90_s"], 1200.0)
+            t = estimator.estimate_timeline(100.0, dd)
+            self.assertAlmostEqual(t["end_to_end_p50_s"],
+                                   t["execution"]["p50_s"] + 600.0, places=5)
+
+    def test_timeline_omits_review_when_none(self):
+        import estimator
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            self._ledger(dd, [0.8, 0.9, 1.0, 1.1, 1.2])        # no answered events
+            t = estimator.estimate_timeline(100.0, dd)
+            self.assertEqual(t["review"]["confidence"], "none")
+            self.assertEqual(t["end_to_end_p50_s"], t["execution"]["p50_s"])
+
+    def test_timeline_zero_latency_added_not_dropped(self):
+        import estimator
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            self._ledger(dd, [0.8, 0.9, 1.0, 1.1, 1.2], latencies=[0.0])
+            rv = estimator.estimate_review(dd)
+            self.assertEqual(rv["p50_s"], 0.0)
+            self.assertEqual(rv["confidence"], "low")          # n=1, real data
+            t = estimator.estimate_timeline(100.0, dd)
+            self.assertEqual(t["end_to_end_p50_s"], t["execution"]["p50_s"])
+
+
+class TestEstimatorRecord(unittest.TestCase):
+    def test_record_complete_and_preregister(self):
+        import estimator
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            estimator.record_estimate(dd, "taskA", 200, actual_s=100, bucket="build")
+            estimator.record_estimate(dd, "taskB", 300)          # pre-register
+            events = estimator._read_habits(dd)
+            a = [e for e in events if e.get("task") == "taskA"][0]
+            b = [e for e in events if e.get("task") == "taskB"][0]
+            self.assertEqual(a["ratio"], 0.5)
+            self.assertEqual(a["bucket"], "build")
+            self.assertIsNone(b["actual_s"])
+            self.assertIsNone(b["ratio"])
+
+    def test_record_creates_missing_dir(self):
+        import estimator
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d) / "does" / "not" / "exist"
+            estimator.record_estimate(dd, "t", 100, actual_s=50)
+            self.assertTrue((dd / "habits.jsonl").exists())
+            self.assertEqual(estimator._read_habits(dd)[0]["ratio"], 0.5)
+
+    def test_record_negative_actual_gets_no_ratio(self):
+        import estimator
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            estimator.record_estimate(dd, "neg", 100, actual_s=-50)
+            self.assertIsNone(estimator._read_habits(dd)[0]["ratio"])
+
+
+class TestEstimateCLI(unittest.TestCase):
+    def test_cli_prints_two_clocks(self):
+        import io
+        import contextlib
+        orig = core.DATA
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            core.DATA = dd
+            try:
+                (dd / "habits.jsonl").write_text("\n".join(
+                    json.dumps({"kind": "estimate", "task": f"t{i}",
+                                "est_s": 100, "actual_s": 100 * r, "ratio": r})
+                    for i, r in enumerate([0.59, 0.6, 0.73, 0.85, 0.93, 1.75, 2.45])
+                ) + "\n", encoding="utf-8")
+                sys.path.insert(
+                    0, str(Path(__file__).resolve().parent.parent / "cli"))
+                import estimate as estimate_cli
+                out = io.StringIO()
+                old_argv = sys.argv
+                sys.argv = ["estimate", "wire the verb", "--raw", "100s"]
+                try:
+                    with contextlib.redirect_stdout(out):
+                        estimate_cli.main()
+                finally:
+                    sys.argv = old_argv
+                text = out.getvalue()
+                self.assertIn("P50", text)
+                self.assertIn("execution", text.lower())
+                self.assertIn("End-to-end", text)
+            finally:
+                core.DATA = orig
+
+    def test_cli_bad_raw_exits_nonzero(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "cli"))
+        import estimate as estimate_cli
+        old_argv = sys.argv
+        sys.argv = ["estimate", "x", "--raw", "notaduration"]
+        try:
+            with self.assertRaises(SystemExit) as cm:
+                estimate_cli.main()
+            self.assertNotEqual(cm.exception.code, 0)
+        finally:
+            sys.argv = old_argv
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
