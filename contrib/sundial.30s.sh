@@ -88,9 +88,38 @@ echo "$LINE | image=${LOGO_B64}"
 
 # --- dropdown ------------------------------------------------------------
 
+detail_lines() {
+    python3 -c '
+import json
+D="'"$DATA_DIR"'"; P="'"$PROJECT_DIR"'"
+CLICK=" | bash=open param1="+P+" terminal=false"
+def clean(s): return str(s).replace("|","/").replace("\n"," ").strip()[:58]
+try:
+    offs=[o for o in json.load(open(D+"/opportunities.json"))
+          if o.get("status")=="offered" and o.get("kind")!="curiosity"]
+except Exception: offs=[]
+try:
+    asks=[c for c in json.load(open(D+"/commitments.json"))
+          if c.get("status")=="open" and c.get("kind")=="awaiting-reply"]
+except Exception: asks=[]
+out=[]
+if offs:
+    out.append("Offers ("+str(len(offs))+"):")
+    for o in offs[:8]:
+        out.append("🤝 "+clean(o.get("offer_msg") or o.get("kind"))+CLICK)
+if asks:
+    out.append("Open asks ("+str(len(asks))+"):")
+    for c in asks[:8]:
+        out.append("❓ "+clean(c.get("text"))+CLICK)
+if not offs and not asks:
+    out.append("Nothing pending right now")
+print("\n".join(out))
+' 2>/dev/null
+}
+
 echo "---"
 echo "Presence: ${PRESENCE_WORD}"
-echo "Open asks: ${OPEN_COUNT}"
-echo "Offers: ${OFFER_COUNT}"
+echo "---"
+detail_lines
 echo "---"
 echo "Open Sundial folder | bash=open param1=${PROJECT_DIR} terminal=false"

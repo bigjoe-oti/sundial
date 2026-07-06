@@ -262,6 +262,10 @@ def detect_meeting(display_procs: set, webrtc: set, active, now):
 
 
 BUILD_MIN_S = 60
+# A "build" that ran longer than this was a daemon (a node server, Docker, an
+# IDE agent), not a build worth a follow-up. Without this cap the detector fired
+# nonsense like "node run finished (9196m)" for multi-day processes.
+BUILD_MAX_S = 4 * 3600
 
 
 def detect_build_finished(current: dict, state: dict, now) -> "tuple[list, dict]":
@@ -280,7 +284,7 @@ def detect_build_finished(current: dict, state: dict, now) -> "tuple[list, dict]
         if pid in current:
             continue
         etime_s = info.get("etime_s", 0)
-        if etime_s >= BUILD_MIN_S:
+        if BUILD_MIN_S <= etime_s <= BUILD_MAX_S:
             events.append({"kind": "build-finished", "cmd": info.get("cmd"),
                            "duration_s": etime_s})
     new_state = {str(pid): info for pid, info in current.items()}

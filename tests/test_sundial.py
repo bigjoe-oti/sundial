@@ -1972,6 +1972,17 @@ class TestOpportunities(unittest.TestCase):
         self.assertEqual(events[0]["cmd"], "npm")
         self.assertEqual(new_state, {"456": {"cmd": "cargo", "etime_s": 10}})
 
+    def test_build_finished_ignores_long_lived_daemon(self):
+        # A "node" that ran for days is a daemon, not a build -- must NOT fire
+        # (regression: the detector once reported "node run finished (9196m)").
+        now = core.now_utc()
+        state = {"111": {"cmd": "node", "etime_s": opportunities.BUILD_MAX_S + 1},
+                 "222": {"cmd": "npm", "etime_s": 600}}   # a real 10-min build
+        events, _ = opportunities.detect_build_finished({}, state, now)
+        cmds = {e["cmd"] for e in events}
+        self.assertIn("npm", cmds)         # the real build still fires
+        self.assertNotIn("node", cmds)     # the multi-day daemon is capped out
+
     def test_detect_new_folders(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
