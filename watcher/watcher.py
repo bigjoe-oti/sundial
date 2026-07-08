@@ -31,6 +31,9 @@ import presence  # noqa: E402  (same directory)
 import opportunities  # noqa: E402  (same directory)
 import owner_model  # noqa: E402  (same directory)
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import policy  # noqa: E402
+
 UNSEEN_OFFSETS = (600, 1200, 3000)   # 10/20/50 min of not-seeing-the-chat
 ELSEWHERE_WEIGHT = 0.5               # two busy minutes = one absent minute
 WALL_CEILING_S = 5400                # 90 min: final rung fires regardless
@@ -110,6 +113,20 @@ RETURN_POOL = (
     "Welcome back, {owner}. This ripened in your absence: {text}",
     "You were gone {away_m} minutes. The question aged well: {text}",
 )
+
+# Tier-neutral fallback copy for NON-normal tiers: no baked-in elapsed minutes
+# (the normal pools hardcode 20m/50m, which would lie at other cadences). Rung 3
+# always states the autonomy consequence.
+TIER_RUNG_POOLS = {
+    1: ("{owner} — I'm blocked on: {text}",
+        "A question ripened while you were away: {text}"),
+    2: ("Still waiting, {owner}: {text}",
+        "Second knock: {text}"),
+    3: ("Final call, {owner}: {text} — proceeding on my judgment or standing down.",
+        "Last knock, {owner}: {text} — I move on my judgment now, or standing down."),
+}
+# NOTE: pick_message selects by int(id,16) % len(pool); both rung-3 entries must
+# carry the "standing down" contract so the terminal tests hold whichever is picked.
 
 
 MAX_NOTIFICATION_LEN = 300
@@ -304,11 +321,12 @@ def accrue(entry: dict, state, now, created) -> None:
 
 
 def wall_ceiling_passed(c: dict, now) -> bool:
-    """True when the 90-min wall ceiling has passed for this commitment.
-    Basis: created_at, falling back to due_at (the only field due_commitments
-    guarantees). Single source of truth for ripe_rung and run_cycle."""
+    """True when this commitment's TIER wall ceiling has passed. Basis:
+    created_at, falling back to due_at. Single source of truth for ripe_rung
+    and run_cycle."""
     basis = core.parse_iso(c.get("created_at")) or core.parse_iso(c.get("due_at"))
-    return basis is not None and (now - basis).total_seconds() >= WALL_CEILING_S
+    ceiling = policy.TIER_TABLE[policy.tier_of(c)]["ceiling"]
+    return basis is not None and (now - basis).total_seconds() >= ceiling
 
 
 def ripe_rung(c: dict, entry: dict, now, state) -> int:
@@ -338,29 +356,57 @@ def ripe_rung(c: dict, entry: dict, now, state) -> int:
     # discard real accrual history for a false instant rung-3. Judge
     # ripeness on unseen_s thresholds accrued so far; the wall ceiling still
     # overrides regardless.
+    table = policy.TIER_TABLE[policy.tier_of(c)]
     if wall_ceiling_passed(c, now):
-        return 3
+        return table["rungs"]
     ripe = 0
-    for i, th in enumerate(UNSEEN_OFFSETS, start=1):
+    for i, th in enumerate(table["offsets"], start=1):
         if entry.get("unseen_s", 0.0) >= th:
             ripe = i
     return ripe
 
 
 def pending_ping(c: dict, entry: dict, now, state, app) -> "tuple[int, str] | None":
-    """The single highest ripe, not-yet-sent rung for a commitment, or None."""
+    """The single highest ripe, not-yet-sent rung for a commitment, or None.
+    Message priority: agent-authored rungs > plain pool > terminal-with-default
+    > normal pools (unchanged) > tier-neutral high/low pools. Every terminal
+    rung carries the autonomy contract; no message states a false elapsed time."""
     if c.get("status") != "open" or core.parse_iso(c.get("due_at")) is None:
         return None
     ripe = ripe_rung(c, entry, now, state)
     if ripe <= entry.get("count", 0):
         return None
     text, cid = c.get("text", ""), c.get("id", "")
+    tier = policy.tier_of(c)
+    is_terminal = (ripe == policy.TIER_TABLE[tier]["rungs"])
+    da = c.get("default_action")
+
+    # 1) agent-authored voice wins (populated in slice ③; absent → skip)
+    stored = c.get("rungs")
+    if isinstance(stored, list) and len(stored) >= ripe and stored[ripe - 1]:
+        msg = str(stored[ripe - 1])
+        if is_terminal and da:
+            msg = f"{msg} — proceeding to {da} or standing down."
+        return ripe, _cap_message(msg)
+
+    # 2) plain (non-awaiting) unchanged
     if c.get("kind") != "awaiting-reply":
         return ripe, pick_message(cid, PLAIN_POOL, text=text)
-    if state == "elsewhere" and app:
-        pool = ELSEWHERE_POOLS[ripe - 1]
-        return ripe, pick_message(cid, pool, text=text, app=app)
-    return ripe, pick_message(cid, RUNG_POOLS[ripe - 1], text=text)
+
+    # 3) terminal rung WITH a stated default: honest, specific, tier-neutral
+    if is_terminal and da:
+        return ripe, _cap_message(
+            f"Final call, {owner_name()} — {text}: proceeding to {da}, or standing down.")
+
+    # 4) NORMAL tier: existing numbered / app-aware pools (behavior unchanged)
+    if tier == "normal":
+        if state == "elsewhere" and app:
+            return ripe, pick_message(cid, ELSEWHERE_POOLS[ripe - 1], text=text, app=app)
+        return ripe, pick_message(cid, RUNG_POOLS[ripe - 1], text=text)
+
+    # 5) HIGH / LOW: number-free copy; terminal rung carries the contract
+    pool = TIER_RUNG_POOLS[3 if is_terminal else ripe]
+    return ripe, pick_message(cid, pool, text=text)
 
 
 NOTIFIER_APP = Path(__file__).resolve().parent / "Sundial.app"
@@ -455,14 +501,19 @@ def chime(kind, state, audible=True) -> None:
         pass
 
 
-def speak_final(message: str, audible=True) -> None:
-    """Opt-in spoken final rung: only when data/speak.txt exists.
-    `audible=False` mutes unconditionally, same courtesy gate as chime()."""
+def speak_final(message: str, audible=True, force=False) -> None:
+    """Spoken final rung. Speaks when `force` (high-urgency tier) OR
+    data/speak.txt exists. `audible=False` mutes unconditionally — the same
+    courtesy gate as chime(); force never overrides silence-courtesy."""
     if not audible:
         return
+    voice, has_speak = "", False
     try:
         voice = (core.DATA / "speak.txt").read_text(encoding="utf-8").strip()
+        has_speak = True
     except Exception:
+        has_speak = False
+    if not force and not has_speak:
         return
     try:
         cmd = (["/usr/bin/say", "-v", voice, message] if voice
@@ -582,6 +633,7 @@ def run_cycle(force: bool = False) -> None:
     snap = sample_presence()
     state, app = snap["state"], snap["front_app"]
     prev = record_presence(snap, now)
+    state_changed = (prev.get("state") != snap["state"])
     audible = sound_allowed(snap["state"], {"state": snap["state"],
         "since": (prev.get("since") if prev.get("state") == snap["state"]
                   else now.isoformat())}, now)
@@ -634,6 +686,7 @@ def run_cycle(force: bool = False) -> None:
                     entry["count"], entry["last"] = ripe, now.isoformat()
                     notified[c["id"]] = entry
                     dirty = True
+                    state_changed = True
                     opportunities.log_habit({
                         "kind": "fire", "rung": "return", "state": snap["state"],
                         "defer_reason": "none", "deferred_s": 0.0,
@@ -666,11 +719,13 @@ def run_cycle(force: bool = False) -> None:
                 desktop_notify("Sundial", message)
                 chime(rung, state, audible)
                 if rung == 3:
-                    speak_final(message, audible)
+                    speak_final(message, audible,
+                                force=(policy.tier_of(c) == "high"))
                 entry["count"], entry["last"] = rung, fire_now.isoformat()
                 entry["deferred_s"], entry["defer_reason"] = deferred_s, reason
                 notified[c["id"]] = entry
                 dirty = True
+                state_changed = True
                 opportunities.log_habit({
                     "kind": "fire", "rung": rung, "state": state,
                     "defer_reason": reason, "deferred_s": deferred_s,
@@ -760,6 +815,7 @@ def run_cycle(force: bool = False) -> None:
                 desktop_notify("Sundial", msg)
                 chime("return", state, audible)
                 opportunities.count_offer(today)
+                state_changed = True
             if rec:
                 habit = {"kind": "offer", "opp": kind, "app": evt.get("app")}
                 if stale:
@@ -789,6 +845,7 @@ def run_cycle(force: bool = False) -> None:
                 desktop_notify("Sundial", msg)
                 chime("return", state, audible)
                 opportunities.count_offer(today)
+                state_changed = True
             if rec:
                 opportunities.log_habit({"kind": "offer",
                                          "opp": "build-finished", "cmd": cmd})
@@ -816,6 +873,8 @@ def run_cycle(force: bool = False) -> None:
         dirty = True
     if dirty:
         core.write_json(NOTIFIED, notified)
+    if state_changed or dirty:
+        core.refresh_menubar()
 
 
 def main() -> None:

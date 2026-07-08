@@ -19,6 +19,7 @@ def main():
     else:
         print(f"no open commitment found with id [{args.id}].")
         sys.exit(1)
+    core.refresh_menubar()
 
 
 if __name__ == "__main__":

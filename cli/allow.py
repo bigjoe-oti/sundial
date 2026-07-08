@@ -9,6 +9,9 @@ WATCHER_DIR = Path(__file__).resolve().parent.parent / "watcher"
 sys.path.insert(0, str(WATCHER_DIR))
 import opportunities  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import core  # noqa: E402
+
 
 def main():
     ap = argparse.ArgumentParser(
@@ -18,6 +21,7 @@ def main():
 
     opportunities.allow_kind(args.kind)
     print(f"{args.kind} offers re-enabled.")
+    core.refresh_menubar()
 
 
 if __name__ == "__main__":

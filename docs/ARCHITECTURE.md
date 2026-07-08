@@ -39,6 +39,23 @@ Three actors, strictly separated. The separation *is* the design.
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+(The ladder cadence above is the **normal** tier; `--weight high|low` retimes it
+per the tier table below.)
+
+## The decision policy (v1.3)
+
+An `awaiting-reply` ask carries three optional dials the agent sets when it
+blocks: **urgency** (`--weight low|normal|high` → that tier's ladder offsets and
+wall ceiling — high 5/10/20 min·40-min ceiling, normal 10/20/50·90-min, low
+two rungs·3-hour), **confidence** (`--confidence 0..1`), and **reversibility**
+(`--irreversible`). The watcher stays date-arithmetic only: it reads the tier
+table in `lib/policy.py` and replays any agent-authored rung text — never a
+model. The **autonomy gate** (`policy.autonomy_decision`, consumed by the
+session-start hook, never the watcher) is: irreversible → always ask you;
+reversible & confidence ≥ 0.95 → proceed; else stand down. "Silence-while-present
+as consent" is a documented fast-follow, deferred until presence accrual is
+ripeness-gated.
+
 ## Design rails (why it's built this way)
 
 1. **The trigger path never thinks.** Wake/escalation decisions are date

@@ -9,6 +9,9 @@ WATCHER_DIR = Path(__file__).resolve().parent.parent / "watcher"
 sys.path.insert(0, str(WATCHER_DIR))
 import opportunities  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import core  # noqa: E402
+
 
 def main():
     ap = argparse.ArgumentParser(
@@ -18,6 +21,7 @@ def main():
 
     n = opportunities.decline_kind(args.kind)
     print(f"declined {args.kind} ({n}/{opportunities.DECLINE_SUPPRESS_AT} to suppress)")
+    core.refresh_menubar()
 
 
 if __name__ == "__main__":

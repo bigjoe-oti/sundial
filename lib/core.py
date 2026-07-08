@@ -16,6 +16,7 @@ import fcntl
 import json
 import os
 import re
+import subprocess
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -239,7 +240,11 @@ def parse_due(due_str: str | None):
 
 
 def add_commitment(text: str, due_str: str | None = None, source: str = "manual",
-                   kind: str = "plain", session_id: str | None = None) -> dict:
+                   kind: str = "plain", session_id: str | None = None,
+                   weight: str | None = None, confidence: float | None = None,
+                   irreversible: bool = False,
+                   default_action: str | None = None,
+                   rungs: list | None = None) -> dict:
     with _ledger_lock():
         items = load_commitments()
         due = parse_due(due_str)
@@ -255,6 +260,16 @@ def add_commitment(text: str, due_str: str | None = None, source: str = "manual"
             rec["kind"] = kind
         if session_id:
             rec["session_id"] = session_id
+        if weight and weight != "normal":
+            rec["weight"] = weight
+        if confidence is not None:
+            rec["confidence"] = confidence
+        if irreversible:
+            rec["irreversible"] = True
+        if default_action:
+            rec["default_action"] = default_action
+        if rungs:
+            rec["rungs"] = [str(r) for r in rungs][:3]
         items.append(rec)
         write_json(COMMITMENTS, items)
         return rec
@@ -309,6 +324,25 @@ def due_commitments(horizon_hours: int = 24) -> list:
             out.append((c, delta))
     out.sort(key=lambda x: x[1])
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Menu-bar sync (Sundial → SwiftBar signal; the plugin stays read-only)
+# --------------------------------------------------------------------------- #
+def _menubar_spawn(cmd) -> None:
+    """Fire-and-forget opener; tests replace this seam."""
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def refresh_menubar() -> None:
+    """Push SwiftBar to re-read Sundial's state immediately (Sundial → SwiftBar
+    signal; the plugin stays strictly read-only). Fail-safe: a missing SwiftBar
+    or unknown URL scheme never raises. The 30s poll remains the backstop."""
+    try:
+        _menubar_spawn(["/usr/bin/open", "-g",
+                        "swiftbar://refreshplugin?name=sundial"])
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------- #

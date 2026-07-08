@@ -25,7 +25,7 @@ zero model calls.
   disarms it — the system's whole goal is your attention, and typing proves
   it has it.
 - **Escalates through absence.** A launchd watcher (pure Python, no LLM,
-  runs every 10 minutes even with no session open) climbs a three-rung
+  runs every 10 minutes even with no session open) climbs an urgency-tiered
   ladder — but the ladder's clock **only advances while you genuinely
   haven't seen the chat**:
 
@@ -34,8 +34,14 @@ zero model calls.
   presence:   HERE ▸ clock paused (you can see the chat — silence means "not now")
          ELSEWHERE ▸ half speed  (you're in another app — popups may name it)
               AWAY ▸ full speed  (nobody's home — sound travels farther than pixels)
-  backstop: 90 wall-minutes forces the final rung, whatever the sensors say
+  backstop: a wall ceiling forces the final rung, whatever the sensors say
 ```
+
+  The cadence above is the **normal** tier. Tag a question's urgency with
+  `--weight`: **high** climbs faster (5/10/20 min, 40-min ceiling, speaks its
+  final rung), **low** slower and shorter (two rungs, 3-hour ceiling). Every
+  tier's terminal rung still states the autonomy contract; none of them ever
+  claims an elapsed time it didn't wait.
 
 - **Waits for the pause, not the tick.** A ripe nudge doesn't fire
   mid-keystroke: it holds up to 3 minutes for you to pause typing or switch
@@ -60,7 +66,10 @@ zero model calls.
   agent reads both clocks — how long you were gone vs. how long you sat
   there choosing silence — and interprets accordingly. Silence-while-present
   is an answer; silence-while-absent is a void. They deserve different
-  responses.
+  responses. The final rung names the *specific* default it will take
+  (*"proceeding to back up then halt, or standing down"*), and the agent acts
+  on its own only when it's highly confident **and** the action is reversible
+  — anything destructive waits for your explicit yes.
 
 ## Quickstart
 
@@ -80,7 +89,8 @@ agent the habit: when it asks you something blocking, it runs
 
 ```
 sundial now                    # time, agent age, due count
-sundial ask "text" [--due +10m]
+sundial ask "text" [--due +10m] [--weight low|normal|high]
+                   [--confidence 0..1] [--irreversible] [--default "what I'll do"]
 sundial due / answered / done <id>
 sundial remember "text" --due 2026-08-01
 ```
@@ -148,9 +158,10 @@ it never writes to `data/` or signals the watcher.
   presence is an idle duration and an app *name* — never window titles,
   never content. All state is plain JSON in `data/`, which is deliberately
   git-ignored: live state is not history.
-- **The sensors can be wrong, so they only soften.** A 90-minute wall
-  ceiling guarantees the final rung regardless of what presence believes.
-- **Max three pings per question, ever.** No quiet hours — the watcher runs
+- **The sensors can be wrong, so they only soften.** A per-tier wall ceiling
+  (40 min high / 90 normal / 3 h low) guarantees the final rung regardless of
+  what presence believes.
+- **Up to three pings per question, ever** (two for the low tier). No quiet hours — the watcher runs
   every 10 minutes around the clock. What's gated is sound, not delivery:
   chimes and speech mute when the screen is locked or you've been away 30+
   minutes; popups and detection never sleep.

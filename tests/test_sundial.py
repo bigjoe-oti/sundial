@@ -23,6 +23,7 @@ sys.path.insert(0, str(LIB))
 import core  # noqa: E402
 import decay  # noqa: E402
 import tzutil  # noqa: E402
+import policy  # noqa: E402
 
 WATCHER_DIR = Path(__file__).resolve().parent.parent / "watcher"
 sys.path.insert(0, str(WATCHER_DIR))
@@ -38,6 +39,17 @@ import prompt_submit  # noqa: E402
 import session_start  # noqa: E402
 
 import presence  # noqa: E402  (watcher dir already on sys.path)
+
+
+_ORIG_MENUBAR_SPAWN = core._menubar_spawn
+
+
+def setUpModule():
+    core._menubar_spawn = lambda cmd: None
+
+
+def tearDownModule():
+    core._menubar_spawn = _ORIG_MENUBAR_SPAWN
 
 
 class TestTz(unittest.TestCase):
@@ -119,6 +131,33 @@ class TestCore(unittest.TestCase):
     def tearDown(self):
         (core.DATA, core.COMMITMENTS, core.LEDGER, core.BIRTH, core.WEIGHTS) = self._orig
         self.tmp.cleanup()
+
+    def test_add_commitment_stores_weight(self):
+        rec = core.add_commitment("q?", "+0m", kind="awaiting-reply", weight="high")
+        self.assertEqual(rec["weight"], "high")
+        self.assertNotIn("weight",
+                         core.add_commitment("q2?", "+0m", kind="awaiting-reply",
+                                             weight="normal"))
+        self.assertNotIn("weight",
+                         core.add_commitment("q3?", "+0m", kind="awaiting-reply"))
+
+    def test_add_commitment_stores_policy_fields(self):
+        rec = core.add_commitment("drop col?", "+0m", kind="awaiting-reply",
+                                  confidence=0.9, irreversible=True,
+                                  default_action="back up then halt")
+        self.assertEqual(rec["confidence"], 0.9)
+        self.assertTrue(rec["irreversible"])
+        self.assertEqual(rec["default_action"], "back up then halt")
+        bare = core.add_commitment("q?", "+0m", kind="awaiting-reply")
+        for k in ("confidence", "irreversible", "default_action"):
+            self.assertNotIn(k, bare)
+
+    def test_add_commitment_stores_rungs(self):
+        rec = core.add_commitment("q?", "+0m", kind="awaiting-reply",
+                                  rungs=["knock one", "knock two", "final call"])
+        self.assertEqual(rec["rungs"], ["knock one", "knock two", "final call"])
+        self.assertNotIn("rungs",
+                         core.add_commitment("q2?", "+0m", kind="awaiting-reply"))
 
     # --- birth ---
     def test_birth_written_once(self):
@@ -662,6 +701,134 @@ class TestAbsenceClock(unittest.TestCase):
     def _entry(self, unseen=0.0, here=0.0, count=0):
         return {"count": count, "last": None, "unseen_s": unseen,
                 "here_s": here, "last_cycle": None}
+
+    def test_high_tier_faster_offsets(self):
+        c, now = self._c(30)          # 30 wall-min < high 40-min ceiling
+        c["weight"] = "high"
+        for unseen, expected in ((299, 0), (300, 1), (600, 2), (1200, 3)):
+            self.assertEqual(
+                watcher.ripe_rung(c, self._entry(unseen=unseen), now, "away"),
+                expected, f"high unseen={unseen}")
+
+    def test_low_tier_two_rungs_and_slower(self):
+        c, now = self._c(60)
+        c["weight"] = "low"
+        self.assertEqual(watcher.ripe_rung(c, self._entry(unseen=1799), now, "away"), 0)
+        self.assertEqual(watcher.ripe_rung(c, self._entry(unseen=1800), now, "away"), 1)
+        self.assertEqual(watcher.ripe_rung(c, self._entry(unseen=5400), now, "away"), 2)
+        self.assertEqual(watcher.ripe_rung(c, self._entry(unseen=99999), now, "away"), 2)
+
+    def test_high_tier_wall_ceiling_at_40min(self):
+        c, now = self._c(41)
+        c["weight"] = "high"
+        self.assertEqual(watcher.ripe_rung(c, self._entry(), now, "here"), 3)
+
+    def test_normal_tier_unchanged_regression(self):
+        c, now = self._c(60)
+        for unseen, expected in ((599, 0), (600, 1), (1200, 2), (3000, 3)):
+            self.assertEqual(
+                watcher.ripe_rung(c, self._entry(unseen=unseen), now, "away"),
+                expected, f"normal unseen={unseen}")
+
+    def test_high_tier_message_states_no_false_minutes(self):
+        c, now = self._c(30)
+        c["weight"] = "high"
+        hit = watcher.pending_ping(c, self._entry(unseen=1200), now, "away", None)
+        self.assertEqual(hit[0], 3)
+        self.assertNotIn("50 min", hit[1])       # normal-pool lie must not appear
+        self.assertNotIn("20m", hit[1])
+        self.assertIn("standing down", hit[1])    # terminal contract present
+
+    def test_low_terminal_rung_states_contract(self):
+        c, now = self._c(60)
+        c["weight"] = "low"
+        hit = watcher.pending_ping(c, self._entry(unseen=5400), now, "away", None)
+        self.assertEqual(hit[0], 2)               # low max rung
+        self.assertIn("standing down", hit[1])    # contract on the LAST rung
+
+    def test_terminal_rung_states_specific_default_action(self):
+        c, now = self._c(60)
+        c["weight"] = "high"
+        c["default_action"] = "back up then halt"
+        hit = watcher.pending_ping(c, self._entry(unseen=1200), now, "away", None)
+        self.assertIn("back up then halt", hit[1])
+
+    def test_normal_tier_copy_unchanged(self):
+        c, now = self._c(60)                      # normal, no default_action
+        hit = watcher.pending_ping(c, self._entry(unseen=3000), now, "away", None)
+        self.assertEqual(hit[0], 3)
+        # normal tier still routes through the existing numbered rung-3 pool;
+        # assert on the autonomy-consequence set (pick_message picks by id hash)
+        self.assertTrue(any(k in hit[1] for k in (
+            "proceeding on my judgment", "park it", "my call now", "deciding without you")))
+
+    def test_high_tier_speaks_final_without_speak_txt(self):
+        spoken = []
+        orig_spawn, orig_data = watcher._spawn, core.DATA
+        watcher._spawn = lambda cmd: spoken.append(cmd)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                core.DATA = Path(d)   # isolate: guarantees no data/speak.txt
+                watcher.speak_final("final", audible=True, force=False)
+                self.assertEqual(spoken, [])                   # no speak.txt → silent
+                watcher.speak_final("final", audible=True, force=True)
+                self.assertTrue(any("/usr/bin/say" in c for c in spoken))
+                spoken.clear()
+                watcher.speak_final("final", audible=False, force=True)
+                self.assertEqual(spoken, [])                   # courtesy still wins
+        finally:
+            watcher._spawn, core.DATA = orig_spawn, orig_data
+
+    def test_pending_ping_uses_stored_rungs(self):
+        c, now = self._c(60)
+        c["rungs"] = ["my rung one", "my rung two", "my final"]
+        hit = watcher.pending_ping(c, self._entry(unseen=600), now, "away", None)
+        self.assertEqual(hit[0], 1)
+        self.assertIn("my rung one", hit[1])
+
+    def test_stored_final_rung_appends_default_action(self):
+        c, now = self._c(60)
+        c["rungs"] = ["r1", "r2", "final call"]
+        c["default_action"] = "back up then halt"
+        hit = watcher.pending_ping(c, self._entry(unseen=3000), now, "away", None)
+        self.assertEqual(hit[0], 3)
+        self.assertIn("back up then halt", hit[1])
+
+    def test_no_rungs_falls_back_to_pool(self):
+        c, now = self._c(60)
+        hit = watcher.pending_ping(c, self._entry(unseen=600), now, "away", None)
+        self.assertNotIn("my rung one", hit[1])
+
+    def test_run_cycle_refreshes_menubar_on_fire(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                    watcher.sample_presence, watcher.desktop_notify,
+                    watcher.wait_for_breakpoint, watcher.sample_assertions_raw,
+                    watcher.sample_net, watcher.sample_recent_fs,
+                    watcher.sample_builds, core._menubar_spawn)
+            core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
+            watcher.NOTIFIED = dd / "notified.json"
+            refreshed = []
+            core._menubar_spawn = lambda cmd: refreshed.append(cmd)
+            watcher.desktop_notify = lambda t, m: True
+            watcher.sample_presence = lambda: {"state": "away", "idle_s": 9999.0,
+                                               "front_app": None}
+            watcher.wait_for_breakpoint = lambda *a, **k: ("bound", 0.0)
+            watcher.sample_assertions_raw = lambda: ""
+            watcher.sample_net = lambda: None
+            watcher.sample_recent_fs = lambda: []
+            watcher.sample_builds = lambda: {}
+            try:
+                core.add_commitment("q?", "+0m", kind="awaiting-reply")
+                watcher.run_cycle(force=True)
+                self.assertTrue(refreshed)
+            finally:
+                (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                 watcher.sample_presence, watcher.desktop_notify,
+                 watcher.wait_for_breakpoint, watcher.sample_assertions_raw,
+                 watcher.sample_net, watcher.sample_recent_fs,
+                 watcher.sample_builds, core._menubar_spawn) = orig
 
     def test_accrue_by_state(self):
         c, now = self._c(30)
@@ -1502,6 +1669,18 @@ class TestPromptSubmitHook(unittest.TestCase):
                          if c.get("kind") == "awaiting-reply" and c["status"] == "open"]
         self.assertEqual(open_awaiting, [])
 
+    def test_disarm_refreshes_menubar(self):
+        refreshed = []
+        orig = core._menubar_spawn
+        core._menubar_spawn = lambda cmd: refreshed.append(cmd)
+        try:
+            core.add_commitment("q?", "+0m", kind="awaiting-reply")
+            prompt_submit.build_context(core, {"prompt": "hello",
+                                               "transcript_path": None})
+            self.assertTrue(refreshed)
+        finally:
+            core._menubar_spawn = orig
+
     def test_answered_habit_logged_with_latency(self):
         core.add_commitment("q?", "+10m", kind="awaiting-reply")
         prompt_submit.build_context(core)
@@ -1626,6 +1805,27 @@ class TestSessionStartHook(unittest.TestCase):
         self.assertIn("z" * 200, line)         # first 200 chars kept
         self.assertNotIn("z" * 201, line)      # rest truncated away
         self.assertLess(len(line), 260)        # tag + 200 + ellipsis, bounded
+
+    def test_verdict_block_for_exhausted_ask(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig = (core.DATA, core.COMMITMENTS, core.BIRTH, core.LEDGER)
+            core.DATA = dd
+            core.COMMITMENTS = dd / "commitments.json"
+            core.BIRTH = dd / "birth.json"
+            core.LEDGER = dd / "session-ledger.json"
+            try:
+                birth = core.get_or_create_birth()
+                rec = core.add_commitment("ship the copy?", "+0m",
+                                          kind="awaiting-reply", confidence=0.97)
+                core.write_json(dd / "notified.json",
+                                {rec["id"]: {"count": 3, "here_s": 0.0,
+                                             "unseen_s": 4000.0, "last": None}})
+                block = session_start.build_block(core, birth, None)
+                self.assertIn("Escalation exhausted", block)
+                self.assertIn("PROCEED", block)
+            finally:
+                (core.DATA, core.COMMITMENTS, core.BIRTH, core.LEDGER) = orig
 
 
 class TestPresence(unittest.TestCase):
@@ -2900,6 +3100,70 @@ class TestEstimateCLI(unittest.TestCase):
             self.assertNotEqual(cm.exception.code, 0)
         finally:
             sys.argv = old_argv
+
+
+class TestPolicyTiers(unittest.TestCase):
+    def test_normal_row_equals_legacy_constants(self):
+        self.assertEqual(policy.TIER_TABLE["normal"]["offsets"], (600, 1200, 3000))
+        self.assertEqual(policy.TIER_TABLE["normal"]["ceiling"], 5400)
+        self.assertEqual(policy.TIER_TABLE["normal"]["rungs"], 3)
+
+    def test_tier_of_defaults_and_reads(self):
+        self.assertEqual(policy.tier_of({}), "normal")
+        self.assertEqual(policy.tier_of({"weight": "high"}), "high")
+        self.assertEqual(policy.tier_of({"weight": "low"}), "low")
+        self.assertEqual(policy.tier_of({"weight": "bogus"}), "normal")
+
+    def test_all_tiers_offsets_match_rungs(self):
+        for t in ("low", "normal", "high"):
+            self.assertIn(t, policy.TIER_TABLE)
+            self.assertEqual(len(policy.TIER_TABLE[t]["offsets"]),
+                             policy.TIER_TABLE[t]["rungs"])
+
+
+class TestMenubarSync(unittest.TestCase):
+    def test_refresh_fires_swiftbar_url(self):
+        seen = []
+        orig = core._menubar_spawn
+        core._menubar_spawn = lambda cmd: seen.append(cmd)
+        try:
+            core.refresh_menubar()
+            self.assertEqual(len(seen), 1)
+            self.assertIn("swiftbar://refreshplugin?name=sundial", " ".join(seen[0]))
+        finally:
+            core._menubar_spawn = orig
+
+    def test_refresh_never_raises(self):
+        orig = core._menubar_spawn
+        core._menubar_spawn = lambda cmd: (_ for _ in ()).throw(OSError("no swiftbar"))
+        try:
+            core.refresh_menubar()   # must swallow
+        finally:
+            core._menubar_spawn = orig
+
+
+class TestAutonomyGate(unittest.TestCase):
+    def test_irreversible_never_proceeds(self):
+        d = policy.autonomy_decision({"irreversible": True, "confidence": 0.99})
+        self.assertEqual(d["action"], "require_explicit_yes")
+
+    def test_high_confidence_reversible_proceeds(self):
+        self.assertEqual(policy.autonomy_decision({"confidence": 0.95})["action"], "proceed")
+        self.assertEqual(policy.autonomy_decision({"confidence": 0.99})["action"], "proceed")
+
+    def test_below_bar_stands_down(self):
+        for conf in (0.0, 0.5, 0.8, 0.9499):
+            self.assertEqual(policy.autonomy_decision({"confidence": conf})["action"],
+                             "stand_down", f"conf={conf}")
+
+    def test_no_or_garbage_confidence_stands_down(self):
+        for c in ({}, {"confidence": None}, {"confidence": "high"}):
+            self.assertEqual(policy.autonomy_decision(c)["action"], "stand_down")
+
+    def test_total_never_raises(self):
+        for c in (None, {"irreversible": "yes"}, {"confidence": 1.0}):
+            self.assertIn(policy.autonomy_decision(c)["action"],
+                          ("require_explicit_yes", "proceed", "stand_down"))
 
 
 if __name__ == "__main__":
