@@ -1722,6 +1722,27 @@ class TestSessionStartHook(unittest.TestCase):
         self.assertNotIn("z" * 201, line)      # rest truncated away
         self.assertLess(len(line), 260)        # tag + 200 + ellipsis, bounded
 
+    def test_verdict_block_for_exhausted_ask(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig = (core.DATA, core.COMMITMENTS, core.BIRTH, core.LEDGER)
+            core.DATA = dd
+            core.COMMITMENTS = dd / "commitments.json"
+            core.BIRTH = dd / "birth.json"
+            core.LEDGER = dd / "session-ledger.json"
+            try:
+                birth = core.get_or_create_birth()
+                rec = core.add_commitment("ship the copy?", "+0m",
+                                          kind="awaiting-reply", confidence=0.97)
+                core.write_json(dd / "notified.json",
+                                {rec["id"]: {"count": 3, "here_s": 0.0,
+                                             "unseen_s": 4000.0, "last": None}})
+                block = session_start.build_block(core, birth, None)
+                self.assertIn("Escalation exhausted", block)
+                self.assertIn("PROCEED", block)
+            finally:
+                (core.DATA, core.COMMITMENTS, core.BIRTH, core.LEDGER) = orig
+
 
 class TestPresence(unittest.TestCase):
     IOREG_SAMPLE = (

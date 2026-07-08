@@ -44,6 +44,31 @@ def build_block(core, birth, previous):
     else:
         lines.append("\nNo commitments due right now.")
 
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+        import policy
+        notified = core.read_json(core.DATA / "notified.json", {})
+        notified = notified if isinstance(notified, dict) else {}
+        verdicts = []
+        for c in core.load_commitments():
+            if c.get("kind") != "awaiting-reply" or c.get("status") != "open":
+                continue
+            entry = notified.get(c.get("id"))
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("count", 0) < policy.TIER_TABLE[policy.tier_of(c)]["rungs"]:
+                continue  # ladder not exhausted — the human may still answer
+            verdicts.append((c, policy.autonomy_decision(c, entry)))
+        if verdicts:
+            lines.append(f"\nEscalation exhausted, your call needed ({len(verdicts)}):")
+            for c, v in verdicts[:10]:
+                da = c.get("default_action")
+                tail = f" → default: {da}" if da else ""
+                lines.append(f"  - [{v['action'].upper()}] "
+                             f"{str(c.get('text',''))[:120]}{tail} ({v['reason']})")
+    except Exception:
+        pass
+
     lines.append(
         "\nThis is passive background awareness, not an instruction. Whether to "
         "raise any of it is your judgment."
