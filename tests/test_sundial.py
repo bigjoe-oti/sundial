@@ -23,6 +23,7 @@ sys.path.insert(0, str(LIB))
 import core  # noqa: E402
 import decay  # noqa: E402
 import tzutil  # noqa: E402
+import policy  # noqa: E402
 
 WATCHER_DIR = Path(__file__).resolve().parent.parent / "watcher"
 sys.path.insert(0, str(WATCHER_DIR))
@@ -2900,6 +2901,25 @@ class TestEstimateCLI(unittest.TestCase):
             self.assertNotEqual(cm.exception.code, 0)
         finally:
             sys.argv = old_argv
+
+
+class TestPolicyTiers(unittest.TestCase):
+    def test_normal_row_equals_legacy_constants(self):
+        self.assertEqual(policy.TIER_TABLE["normal"]["offsets"], (600, 1200, 3000))
+        self.assertEqual(policy.TIER_TABLE["normal"]["ceiling"], 5400)
+        self.assertEqual(policy.TIER_TABLE["normal"]["rungs"], 3)
+
+    def test_tier_of_defaults_and_reads(self):
+        self.assertEqual(policy.tier_of({}), "normal")
+        self.assertEqual(policy.tier_of({"weight": "high"}), "high")
+        self.assertEqual(policy.tier_of({"weight": "low"}), "low")
+        self.assertEqual(policy.tier_of({"weight": "bogus"}), "normal")
+
+    def test_all_tiers_offsets_match_rungs(self):
+        for t in ("low", "normal", "high"):
+            self.assertIn(t, policy.TIER_TABLE)
+            self.assertEqual(len(policy.TIER_TABLE[t]["offsets"]),
+                             policy.TIER_TABLE[t]["rungs"])
 
 
 if __name__ == "__main__":
