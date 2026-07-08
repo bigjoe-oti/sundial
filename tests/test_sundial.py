@@ -664,6 +664,34 @@ class TestAbsenceClock(unittest.TestCase):
         return {"count": count, "last": None, "unseen_s": unseen,
                 "here_s": here, "last_cycle": None}
 
+    def test_high_tier_faster_offsets(self):
+        c, now = self._c(30)          # 30 wall-min < high 40-min ceiling
+        c["weight"] = "high"
+        for unseen, expected in ((299, 0), (300, 1), (600, 2), (1200, 3)):
+            self.assertEqual(
+                watcher.ripe_rung(c, self._entry(unseen=unseen), now, "away"),
+                expected, f"high unseen={unseen}")
+
+    def test_low_tier_two_rungs_and_slower(self):
+        c, now = self._c(60)
+        c["weight"] = "low"
+        self.assertEqual(watcher.ripe_rung(c, self._entry(unseen=1799), now, "away"), 0)
+        self.assertEqual(watcher.ripe_rung(c, self._entry(unseen=1800), now, "away"), 1)
+        self.assertEqual(watcher.ripe_rung(c, self._entry(unseen=5400), now, "away"), 2)
+        self.assertEqual(watcher.ripe_rung(c, self._entry(unseen=99999), now, "away"), 2)
+
+    def test_high_tier_wall_ceiling_at_40min(self):
+        c, now = self._c(41)
+        c["weight"] = "high"
+        self.assertEqual(watcher.ripe_rung(c, self._entry(), now, "here"), 3)
+
+    def test_normal_tier_unchanged_regression(self):
+        c, now = self._c(60)
+        for unseen, expected in ((599, 0), (600, 1), (1200, 2), (3000, 3)):
+            self.assertEqual(
+                watcher.ripe_rung(c, self._entry(unseen=unseen), now, "away"),
+                expected, f"normal unseen={unseen}")
+
     def test_accrue_by_state(self):
         c, now = self._c(30)
         for state, unseen, here in (("away", 600.0, 0.0),

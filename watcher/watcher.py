@@ -31,6 +31,9 @@ import presence  # noqa: E402  (same directory)
 import opportunities  # noqa: E402  (same directory)
 import owner_model  # noqa: E402  (same directory)
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import policy  # noqa: E402
+
 UNSEEN_OFFSETS = (600, 1200, 3000)   # 10/20/50 min of not-seeing-the-chat
 ELSEWHERE_WEIGHT = 0.5               # two busy minutes = one absent minute
 WALL_CEILING_S = 5400                # 90 min: final rung fires regardless
@@ -304,11 +307,12 @@ def accrue(entry: dict, state, now, created) -> None:
 
 
 def wall_ceiling_passed(c: dict, now) -> bool:
-    """True when the 90-min wall ceiling has passed for this commitment.
-    Basis: created_at, falling back to due_at (the only field due_commitments
-    guarantees). Single source of truth for ripe_rung and run_cycle."""
+    """True when this commitment's TIER wall ceiling has passed. Basis:
+    created_at, falling back to due_at. Single source of truth for ripe_rung
+    and run_cycle."""
     basis = core.parse_iso(c.get("created_at")) or core.parse_iso(c.get("due_at"))
-    return basis is not None and (now - basis).total_seconds() >= WALL_CEILING_S
+    ceiling = policy.TIER_TABLE[policy.tier_of(c)]["ceiling"]
+    return basis is not None and (now - basis).total_seconds() >= ceiling
 
 
 def ripe_rung(c: dict, entry: dict, now, state) -> int:
@@ -338,10 +342,11 @@ def ripe_rung(c: dict, entry: dict, now, state) -> int:
     # discard real accrual history for a false instant rung-3. Judge
     # ripeness on unseen_s thresholds accrued so far; the wall ceiling still
     # overrides regardless.
+    table = policy.TIER_TABLE[policy.tier_of(c)]
     if wall_ceiling_passed(c, now):
-        return 3
+        return table["rungs"]
     ripe = 0
-    for i, th in enumerate(UNSEEN_OFFSETS, start=1):
+    for i, th in enumerate(table["offsets"], start=1):
         if entry.get("unseen_s", 0.0) >= th:
             ripe = i
     return ripe
