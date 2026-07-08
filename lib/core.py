@@ -16,6 +16,7 @@ import fcntl
 import json
 import os
 import re
+import subprocess
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -323,6 +324,25 @@ def due_commitments(horizon_hours: int = 24) -> list:
             out.append((c, delta))
     out.sort(key=lambda x: x[1])
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Menu-bar sync (Sundial → SwiftBar signal; the plugin stays read-only)
+# --------------------------------------------------------------------------- #
+def _menubar_spawn(cmd) -> None:
+    """Fire-and-forget opener; tests replace this seam."""
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def refresh_menubar() -> None:
+    """Push SwiftBar to re-read Sundial's state immediately (Sundial → SwiftBar
+    signal; the plugin stays strictly read-only). Fail-safe: a missing SwiftBar
+    or unknown URL scheme never raises. The 30s poll remains the backstop."""
+    try:
+        _menubar_spawn(["/usr/bin/open", "-g",
+                        "swiftbar://refreshplugin?name=sundial"])
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------- #

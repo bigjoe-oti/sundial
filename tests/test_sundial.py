@@ -3064,6 +3064,27 @@ class TestPolicyTiers(unittest.TestCase):
                              policy.TIER_TABLE[t]["rungs"])
 
 
+class TestMenubarSync(unittest.TestCase):
+    def test_refresh_fires_swiftbar_url(self):
+        seen = []
+        orig = core._menubar_spawn
+        core._menubar_spawn = lambda cmd: seen.append(cmd)
+        try:
+            core.refresh_menubar()
+            self.assertEqual(len(seen), 1)
+            self.assertIn("swiftbar://refreshplugin?name=sundial", " ".join(seen[0]))
+        finally:
+            core._menubar_spawn = orig
+
+    def test_refresh_never_raises(self):
+        orig = core._menubar_spawn
+        core._menubar_spawn = lambda cmd: (_ for _ in ()).throw(OSError("no swiftbar"))
+        try:
+            core.refresh_menubar()   # must swallow
+        finally:
+            core._menubar_spawn = orig
+
+
 class TestAutonomyGate(unittest.TestCase):
     def test_irreversible_never_proceeds(self):
         d = policy.autonomy_decision({"irreversible": True, "confidence": 0.99})
