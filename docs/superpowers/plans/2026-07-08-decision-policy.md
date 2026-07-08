@@ -1,37 +1,39 @@
-# Decision Policy Implementation Plan
+# Decision Policy Implementation Plan (rev. 2 — post-audit)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Give `sundial ask` urgency tiers, a confidence-governed autonomy gate, agent-authored escalation voice, and an instantly-syncing menu-bar face — without breaking any rail.
+**Goal:** Give `sundial ask` urgency tiers, a confidence-governed autonomy gate (≥0.95-only in v1), agent-authored escalation voice, and an instantly-syncing menu-bar face — without breaking any rail.
 
-**Architecture:** A new `lib/policy.py` owns the decision vocabulary (tier→timings table + the pure `autonomy_decision`). `watcher.py` reads the tier table (still LLM-free, still date arithmetic). `core.add_commitment` stores optional policy fields; `cli/ask.py` exposes them. `session_start` surfaces autonomy verdicts to the returning agent. `core.refresh_menubar()` pushes SwiftBar to re-read on every state mutation.
+**Architecture:** A new `lib/policy.py` owns the decision vocabulary (tier→timings table + the pure `autonomy_decision`). `watcher.py` reads the tier table (LLM-free, date arithmetic) and speaks tier-honest copy. `core.add_commitment` stores optional policy fields; `cli/ask.py` exposes them. `session_start` surfaces autonomy verdicts. `core.refresh_menubar()` pushes SwiftBar to re-read on every state mutation.
 
 **Tech Stack:** Python 3.9+ stdlib only, macOS built-ins (`open`, `say`). unittest. No third-party deps.
 
 ## Global Constraints
 
 - **No LLM in the watcher/trigger path.** Agent voice is pre-composed at ask-time and replayed verbatim.
-- **Delivery never suppressed.** Tiering/confidence may soften SOUND only; popups + the wall ceiling always fire.
+- **Delivery never suppressed** — tiering/confidence soften SOUND only; popups + the tier wall ceiling always fire.
+- **Every delivery is honest** — no message states an elapsed time it didn't wait; every terminal rung states the autonomy contract.
 - **Zero third-party dependencies.** Stdlib + macOS built-ins only.
 - **Backward compatibility.** An untagged `sundial ask` behaves byte-identically to today; all 184 existing tests pass unchanged after every task.
 - **Fail-safe.** Every new path degrades silently; never blocks a session or crashes a cycle.
-- Run the full suite with `python3 -m pytest tests/ -q` (baseline: 184 passed).
+- Baseline: `python3 -m pytest tests/ -q` → **184 passed**. Expected end state: **~209**.
 - All commits land on branch `feat/decision-policy`.
+
+### Post-audit changes folded in
+- **Present-silence DEFERRED** (audit S1): the `here_s ≥ 60` consent predicate is unsound as wired to `accrue`. v1 gate is irreversible→require-yes, confidence ≥0.95→proceed, else stand-down. No present-silence branch. (Fast-follow once accrual is ripeness-gated.)
+- **Honest tier copy** (audit B1/B2): high/low tiers use number-free fallback pools; the terminal rung always carries the autonomy contract. Normal tier copy untouched.
+- Mechanical fixes: high-tier test age `_c(30)`; real `build_context(core, data)` signature; `decline.py`/`allow.py` need a `core` import; existing run_cycle tests stub `core._menubar_spawn`.
 
 ---
 
-## SLICE ① — Urgency tiering
+## SLICE ① — Urgency tiering (honest)
 
 ### Task 1: `lib/policy.py` — tier table + `tier_of`
 
-**Files:**
-- Create: `lib/policy.py`
-- Test: `tests/test_sundial.py` (new class `TestPolicyTiers`)
+**Files:** Create `lib/policy.py`; Test: `tests/test_sundial.py` (new class `TestPolicyTiers`).
+**Interfaces produced:** `TIER_TABLE: dict`, `DEFAULT_TIER = "normal"`, `tier_of(commitment) -> str`.
 
-**Interfaces:**
-- Produces: `TIER_TABLE: dict`, `DEFAULT_TIER = "normal"`, `tier_of(commitment: dict) -> str`
-
-- [ ] **Step 1: Write the failing test** — add to `tests/test_sundial.py` (after the imports block, add `import policy  # noqa: E402` alongside the other `lib` imports; append the class near the other watcher tests):
+- [ ] **Step 1: Failing test** — add `import policy  # noqa: E402` beside the other `lib` imports (after `import tzutil`), then append:
 
 ```python
 class TestPolicyTiers(unittest.TestCase):
@@ -44,21 +46,18 @@ class TestPolicyTiers(unittest.TestCase):
         self.assertEqual(policy.tier_of({}), "normal")
         self.assertEqual(policy.tier_of({"weight": "high"}), "high")
         self.assertEqual(policy.tier_of({"weight": "low"}), "low")
-        self.assertEqual(policy.tier_of({"weight": "bogus"}), "normal")  # unknown → normal
+        self.assertEqual(policy.tier_of({"weight": "bogus"}), "normal")
 
-    def test_all_tiers_present(self):
+    def test_all_tiers_offsets_match_rungs(self):
         for t in ("low", "normal", "high"):
             self.assertIn(t, policy.TIER_TABLE)
             self.assertEqual(len(policy.TIER_TABLE[t]["offsets"]),
                              policy.TIER_TABLE[t]["rungs"])
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run to verify FAIL** — `python3 -m pytest tests/test_sundial.py::TestPolicyTiers -q` → `ModuleNotFoundError: policy`.
 
-Run: `python3 -m pytest tests/test_sundial.py::TestPolicyTiers -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'policy'`
-
-- [ ] **Step 3: Write minimal implementation** — create `lib/policy.py`:
+- [ ] **Step 3: Implement** — create `lib/policy.py`:
 
 ```python
 #!/usr/bin/env python3
@@ -69,7 +68,7 @@ gate (confidence + reversibility → proceed/stand-down). Imported by the
 watcher, the CLI, and the session-start hook so the vocabulary lives in one
 place. Nothing here touches disk or the network."""
 
-# urgency tier -> (unseen-time rung offsets, 90-min-style wall ceiling, rung count).
+# urgency tier -> (unseen-time rung offsets, wall ceiling seconds, rung count).
 # The "normal" row is byte-identical to the pre-tier constants (UNSEEN_OFFSETS
 # = (600,1200,3000), WALL_CEILING_S = 5400) so legacy behavior is unchanged.
 TIER_TABLE = {
@@ -87,33 +86,19 @@ def tier_of(commitment: dict) -> str:
     return w if w in TIER_TABLE else DEFAULT_TIER
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run PASS** — `python3 -m pytest tests/test_sundial.py::TestPolicyTiers -q` → 3 pass.
+- [ ] **Step 5: Commit** — `git add lib/policy.py tests/test_sundial.py && git commit -m "feat(policy): tier table + tier_of (normal row == legacy)"`
 
-Run: `python3 -m pytest tests/test_sundial.py::TestPolicyTiers -q`
-Expected: PASS (3 tests)
+### Task 2: tier-aware `ripe_rung` + `wall_ceiling_passed`
 
-- [ ] **Step 5: Commit**
+**Files:** Modify `watcher/watcher.py`; Test: `TestAbsenceClock`.
+**Interfaces consumed:** `policy.TIER_TABLE`, `policy.tier_of`. Signatures unchanged.
 
-```bash
-git add lib/policy.py tests/test_sundial.py
-git commit -m "feat(policy): tier table + tier_of (normal row == legacy)"
-```
-
-### Task 2: Make `ripe_rung` + `wall_ceiling_passed` tier-aware
-
-**Files:**
-- Modify: `watcher/watcher.py` (imports; `wall_ceiling_passed`; `ripe_rung`)
-- Test: `tests/test_sundial.py::TestAbsenceClock` (new methods)
-
-**Interfaces:**
-- Consumes: `policy.TIER_TABLE`, `policy.tier_of` (Task 1)
-- Produces: `ripe_rung`/`wall_ceiling_passed` now honor the commitment's tier; signatures unchanged.
-
-- [ ] **Step 1: Write the failing test** — add to `TestAbsenceClock`:
+- [ ] **Step 1: Failing test** — add to `TestAbsenceClock`:
 
 ```python
     def test_high_tier_faster_offsets(self):
-        c, now = self._c(60)
+        c, now = self._c(30)          # 30 wall-min < high 40-min ceiling
         c["weight"] = "high"
         for unseen, expected in ((299, 0), (300, 1), (600, 2), (1200, 3)):
             self.assertEqual(
@@ -126,30 +111,24 @@ git commit -m "feat(policy): tier table + tier_of (normal row == legacy)"
         self.assertEqual(watcher.ripe_rung(c, self._entry(unseen=1799), now, "away"), 0)
         self.assertEqual(watcher.ripe_rung(c, self._entry(unseen=1800), now, "away"), 1)
         self.assertEqual(watcher.ripe_rung(c, self._entry(unseen=5400), now, "away"), 2)
-        # never a 3rd rung, even far past the last offset
         self.assertEqual(watcher.ripe_rung(c, self._entry(unseen=99999), now, "away"), 2)
 
     def test_high_tier_wall_ceiling_at_40min(self):
-        c, now = self._c(41)     # 41 wall-min
+        c, now = self._c(41)
         c["weight"] = "high"
         self.assertEqual(watcher.ripe_rung(c, self._entry(), now, "here"), 3)
 
     def test_normal_tier_unchanged_regression(self):
-        c, now = self._c(60)     # no weight → normal
+        c, now = self._c(60)
         for unseen, expected in ((599, 0), (600, 1), (1200, 2), (3000, 3)):
             self.assertEqual(
                 watcher.ripe_rung(c, self._entry(unseen=unseen), now, "away"),
                 expected, f"normal unseen={unseen}")
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run FAIL** — `python3 -m pytest tests/test_sundial.py::TestAbsenceClock -q -k "high_tier or low_tier"` → high/low use normal offsets.
 
-Run: `python3 -m pytest tests/test_sundial.py::TestAbsenceClock -q -k "high_tier or low_tier"`
-Expected: FAIL — high/low use normal offsets (e.g. `high unseen=300` returns 0, not 1)
-
-- [ ] **Step 3: Write minimal implementation** — in `watcher/watcher.py`:
-
-Add the import near the top (after `import owner_model`):
+- [ ] **Step 3: Implement** — in `watcher/watcher.py`, add after the existing `import owner_model` block:
 
 ```python
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
@@ -160,7 +139,7 @@ Replace `wall_ceiling_passed`:
 
 ```python
 def wall_ceiling_passed(c: dict, now) -> bool:
-    """True when this commitment's tier wall ceiling has passed. Basis:
+    """True when this commitment's TIER wall ceiling has passed. Basis:
     created_at, falling back to due_at. Single source of truth for ripe_rung
     and run_cycle."""
     basis = core.parse_iso(c.get("created_at")) or core.parse_iso(c.get("due_at"))
@@ -168,7 +147,7 @@ def wall_ceiling_passed(c: dict, now) -> bool:
     return basis is not None and (now - basis).total_seconds() >= ceiling
 ```
 
-In `ripe_rung`, replace the tail (from `if wall_ceiling_passed(c, now):` onward) with tier-aware offsets and max-rung:
+In `ripe_rung`, replace the tail (from `if wall_ceiling_passed(c, now):` to the end):
 
 ```python
     table = policy.TIER_TABLE[policy.tier_of(c)]
@@ -181,115 +160,163 @@ In `ripe_rung`, replace the tail (from `if wall_ceiling_passed(c, now):` onward)
     return ripe
 ```
 
-(Leave the plain-kind branch and the legacy-degrade branch above it untouched — legacy degrade only fires for weight-less records, i.e. normal semantics.)
+(Leave the plain-kind branch and the legacy-degrade branch above untouched — legacy degrade only fires for weight-less records, i.e. normal semantics. `UNSEEN_OFFSETS`/`WALL_CEILING_S` module constants become unreferenced but harmless; `RUNG_OFFSETS` stays live in the legacy branch.)
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run PASS** — `python3 -m pytest tests/test_sundial.py -q` → 188.
+- [ ] **Step 5: Commit** — `git add watcher/watcher.py tests/test_sundial.py && git commit -m "feat(watcher): tier-aware ripe_rung + wall ceiling"`
 
-Run: `python3 -m pytest tests/test_sundial.py -q`
-Expected: PASS — all prior tests + the 4 new ones (188 total)
+### Task 3: store `weight`; `sundial ask --weight`
 
-- [ ] **Step 5: Commit**
+**Files:** Modify `lib/core.py` (`add_commitment`), `cli/ask.py`; Test: `TestCore`.
+**Interfaces produced:** `core.add_commitment(..., weight=None)` stores `weight` only for non-normal tiers.
 
-```bash
-git add watcher/watcher.py tests/test_sundial.py
-git commit -m "feat(watcher): tier-aware ripe_rung + wall ceiling"
-```
-
-### Task 3: Store `weight`; add `--weight` to `sundial ask`
-
-**Files:**
-- Modify: `lib/core.py:241-260` (`add_commitment`)
-- Modify: `cli/ask.py`
-- Test: `tests/test_sundial.py::TestCore` (new method)
-
-**Interfaces:**
-- Produces: `core.add_commitment(..., weight=None)` stores `weight` on the record only when it is a non-normal tier.
-
-- [ ] **Step 1: Write the failing test** — add to `TestCore` (its setUp already redirects `core.DATA`/`core.COMMITMENTS` to a temp dir):
+- [ ] **Step 1: Failing test** — add to `TestCore`:
 
 ```python
     def test_add_commitment_stores_weight(self):
         rec = core.add_commitment("q?", "+0m", kind="awaiting-reply", weight="high")
         self.assertEqual(rec["weight"], "high")
-        # normal / absent is NOT stored (records stay clean, legacy-identical)
-        rec2 = core.add_commitment("q2?", "+0m", kind="awaiting-reply", weight="normal")
-        self.assertNotIn("weight", rec2)
-        rec3 = core.add_commitment("q3?", "+0m", kind="awaiting-reply")
-        self.assertNotIn("weight", rec3)
+        self.assertNotIn("weight",
+                         core.add_commitment("q2?", "+0m", kind="awaiting-reply",
+                                             weight="normal"))
+        self.assertNotIn("weight",
+                         core.add_commitment("q3?", "+0m", kind="awaiting-reply"))
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run FAIL** — unexpected keyword `weight`.
 
-Run: `python3 -m pytest tests/test_sundial.py::TestCore::test_add_commitment_stores_weight -q`
-Expected: FAIL — `add_commitment() got an unexpected keyword argument 'weight'`
-
-- [ ] **Step 3: Write minimal implementation** — in `lib/core.py`, change the `add_commitment` signature and record-building:
+- [ ] **Step 3: Implement** — change `add_commitment` signature in `lib/core.py` to add `weight: str | None = None`, and after the `if session_id:` block add:
 
 ```python
-def add_commitment(text: str, due_str: str | None = None, source: str = "manual",
-                   kind: str = "plain", session_id: str | None = None,
-                   weight: str | None = None) -> dict:
-    with _ledger_lock():
-        items = load_commitments()
-        due = parse_due(due_str)
-        rec = {
-            "id": uuid.uuid4().hex[:8],
-            "created_at": now_utc().isoformat(),
-            "due_at": due.isoformat() if due else None,
-            "text": text,
-            "source": source,
-            "status": "open",
-        }
-        if kind != "plain":
-            rec["kind"] = kind
-        if session_id:
-            rec["session_id"] = session_id
         if weight and weight != "normal":
             rec["weight"] = weight
-        items.append(rec)
-        write_json(COMMITMENTS, items)
-        return rec
 ```
 
-In `cli/ask.py`, add the flag and pass it through:
+In `cli/ask.py` add before `args = ap.parse_args()`:
 
 ```python
     ap.add_argument("--weight", choices=("low", "normal", "high"),
                     default="normal", help="urgency tier (default normal)")
-    args = ap.parse_args()
+```
 
-    rec = core.add_commitment(args.text, args.due, args.source,
-                              kind="awaiting-reply", session_id=args.session,
-                              weight=args.weight)
-    due = core.parse_iso(rec["due_at"])
-    when = (due.astimezone(core.tzinfo()).strftime("%d %b %Y %H:%M")
-            if due else "no due date")
+and pass `weight=args.weight` into the `add_commitment(...)` call; change the print to include the tier:
+
+```python
     tier = rec.get("weight", "normal")
     print(f"armed [{rec['id']}] ({tier}) {rec['text']}  (rung 1 due: {when})")
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run PASS** — `python3 -m pytest tests/test_sundial.py -q` → 189.
+- [ ] **Step 5: Commit** — `git add lib/core.py cli/ask.py tests/test_sundial.py && git commit -m "feat(ask): --weight tier flag stored on the commitment"`
 
-Run: `python3 -m pytest tests/test_sundial.py -q`
-Expected: PASS (189 total)
+### Task 4: honest tier-aware `pending_ping` (number-free high/low copy + terminal contract)
 
-- [ ] **Step 5: Commit**
+**Files:** Modify `watcher/watcher.py` (add `TIER_RUNG_POOLS`, rewrite `pending_ping`); Test: `TestAbsenceClock`.
+**Interfaces:** `pending_ping(c, entry, now, state, app)` unchanged signature. Reads `c["default_action"]` (may be absent) and, later, `c["rungs"]` (added in Task 10).
 
-```bash
-git add lib/core.py cli/ask.py tests/test_sundial.py
-git commit -m "feat(ask): --weight tier flag stored on the commitment"
+- [ ] **Step 1: Failing test** — add to `TestAbsenceClock`:
+
+```python
+    def test_high_tier_message_states_no_false_minutes(self):
+        c, now = self._c(30); c["weight"] = "high"
+        hit = watcher.pending_ping(c, self._entry(unseen=1200), now, "away", None)
+        self.assertEqual(hit[0], 3)
+        self.assertNotIn("50 min", hit[1])       # normal-pool lie must not appear
+        self.assertNotIn("20m", hit[1])
+        self.assertIn("standing down", hit[1])    # terminal contract present
+
+    def test_low_terminal_rung_states_contract(self):
+        c, now = self._c(60); c["weight"] = "low"
+        hit = watcher.pending_ping(c, self._entry(unseen=5400), now, "away", None)
+        self.assertEqual(hit[0], 2)               # low max rung
+        self.assertIn("standing down", hit[1])    # contract on the LAST rung
+
+    def test_terminal_rung_states_specific_default_action(self):
+        c, now = self._c(60); c["weight"] = "high"
+        c["default_action"] = "back up then halt"
+        hit = watcher.pending_ping(c, self._entry(unseen=1200), now, "away", None)
+        self.assertIn("back up then halt", hit[1])
+
+    def test_normal_tier_copy_unchanged(self):
+        c, now = self._c(60)                      # normal, no default_action
+        hit = watcher.pending_ping(c, self._entry(unseen=3000), now, "away", None)
+        self.assertEqual(hit[0], 3)
+        self.assertIn("proceeding on my judgment", hit[1])  # existing rung-3 pool
 ```
 
-### Task 4: High tier speaks at the final rung
+- [ ] **Step 2: Run FAIL** — high tier routes through numbered `RUNG_POOLS`.
 
-**Files:**
-- Modify: `watcher/watcher.py` (`speak_final`; the batch fire loop in `run_cycle`)
-- Test: `tests/test_sundial.py::TestAbsenceClock` (new method)
+- [ ] **Step 3: Implement** — in `watcher/watcher.py`, add near the other pools:
 
-**Interfaces:**
-- Produces: `speak_final(message, audible=True, force=False)` — `force=True` speaks even without `data/speak.txt`.
+```python
+# Tier-neutral fallback copy for NON-normal tiers: no baked-in elapsed minutes
+# (the normal pools hardcode 20m/50m, which would lie at other cadences). Rung 3
+# always states the autonomy consequence.
+TIER_RUNG_POOLS = {
+    1: ("{owner} — I'm blocked on: {text}",
+        "A question ripened while you were away: {text}"),
+    2: ("Still waiting, {owner}: {text}",
+        "Second knock: {text}"),
+    3: ("Final call, {owner}: {text} — proceeding on my judgment or standing down.",
+        "Last knock, {owner}: {text} — I take it from here or stand down."),
+}
+```
 
-- [ ] **Step 1: Write the failing test** — add to `TestAbsenceClock`:
+Replace `pending_ping` entirely:
+
+```python
+def pending_ping(c: dict, entry: dict, now, state, app) -> "tuple[int, str] | None":
+    """The single highest ripe, not-yet-sent rung for a commitment, or None.
+    Message priority: agent-authored rungs > plain pool > terminal-with-default
+    > normal pools (unchanged) > tier-neutral high/low pools. Every terminal
+    rung carries the autonomy contract; no message states a false elapsed time."""
+    if c.get("status") != "open" or core.parse_iso(c.get("due_at")) is None:
+        return None
+    ripe = ripe_rung(c, entry, now, state)
+    if ripe <= entry.get("count", 0):
+        return None
+    text, cid = c.get("text", ""), c.get("id", "")
+    tier = policy.tier_of(c)
+    is_terminal = (ripe == policy.TIER_TABLE[tier]["rungs"])
+    da = c.get("default_action")
+
+    # 1) agent-authored voice wins (populated in slice ③; absent → skip)
+    stored = c.get("rungs")
+    if isinstance(stored, list) and len(stored) >= ripe and stored[ripe - 1]:
+        msg = str(stored[ripe - 1])
+        if is_terminal and da:
+            msg = f"{msg} — proceeding to {da} or standing down."
+        return ripe, _cap_message(msg)
+
+    # 2) plain (non-awaiting) unchanged
+    if c.get("kind") != "awaiting-reply":
+        return ripe, pick_message(cid, PLAIN_POOL, text=text)
+
+    # 3) terminal rung WITH a stated default: honest, specific, tier-neutral
+    if is_terminal and da:
+        return ripe, _cap_message(
+            f"Final call, {owner_name()} — {text}: proceeding to {da}, or standing down.")
+
+    # 4) NORMAL tier: existing numbered / app-aware pools (behavior unchanged)
+    if tier == "normal":
+        if state == "elsewhere" and app:
+            return ripe, pick_message(cid, ELSEWHERE_POOLS[ripe - 1], text=text, app=app)
+        return ripe, pick_message(cid, RUNG_POOLS[ripe - 1], text=text)
+
+    # 5) HIGH / LOW: number-free copy; terminal rung carries the contract
+    pool = TIER_RUNG_POOLS[3 if is_terminal else ripe]
+    return ripe, pick_message(cid, pool, text=text)
+```
+
+- [ ] **Step 4: Run PASS** — `python3 -m pytest tests/test_sundial.py -q` → 193 (existing `test_pending_ping_elsewhere_uses_app_pool`, `test_rung3_always_states_autonomy` etc. stay green via path 4).
+- [ ] **Step 5: Commit** — `git add watcher/watcher.py tests/test_sundial.py && git commit -m "feat(watcher): honest tier copy — no false minutes, terminal contract always"`
+
+### Task 5: high tier speaks the final rung unprompted
+
+**Files:** Modify `watcher/watcher.py` (`speak_final`; batch fire loop); Test: `TestAbsenceClock`.
+**Interfaces:** `speak_final(message, audible=True, force=False)`.
+
+- [ ] **Step 1: Failing test** — add to `TestAbsenceClock`:
 
 ```python
     def test_high_tier_speaks_final_without_speak_txt(self):
@@ -297,25 +324,20 @@ git commit -m "feat(ask): --weight tier flag stored on the commitment"
         orig = watcher._spawn
         watcher._spawn = lambda cmd: spoken.append(cmd)
         try:
-            # no data/speak.txt exists → normal tier stays silent, high speaks
             watcher.speak_final("final", audible=True, force=False)
-            self.assertEqual(spoken, [])
+            self.assertEqual(spoken, [])                       # no speak.txt → silent
             watcher.speak_final("final", audible=True, force=True)
             self.assertTrue(any("/usr/bin/say" in c for c in spoken))
-            # courtesy still wins: force cannot override an inaudible gate
             spoken.clear()
             watcher.speak_final("final", audible=False, force=True)
-            self.assertEqual(spoken, [])
+            self.assertEqual(spoken, [])                       # courtesy still wins
         finally:
             watcher._spawn = orig
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run FAIL** — unexpected keyword `force`.
 
-Run: `python3 -m pytest tests/test_sundial.py::TestAbsenceClock::test_high_tier_speaks_final_without_speak_txt -q`
-Expected: FAIL — `speak_final() got an unexpected keyword argument 'force'`
-
-- [ ] **Step 3: Write minimal implementation** — replace `speak_final` in `watcher/watcher.py`:
+- [ ] **Step 3: Implement** — replace `speak_final`:
 
 ```python
 def speak_final(message: str, audible=True, force=False) -> None:
@@ -324,7 +346,7 @@ def speak_final(message: str, audible=True, force=False) -> None:
     courtesy gate as chime(); force never overrides silence-courtesy."""
     if not audible:
         return
-    voice = ""
+    voice, has_speak = "", False
     try:
         voice = (core.DATA / "speak.txt").read_text(encoding="utf-8").strip()
         has_speak = True
@@ -340,184 +362,115 @@ def speak_final(message: str, audible=True, force=False) -> None:
         pass
 ```
 
-In `run_cycle`, the batch fire loop currently reads `if rung == 3: speak_final(message, audible)`. Replace with a tier-aware force:
+In `run_cycle`'s batch fire loop, change `if rung == 3: speak_final(message, audible)` to:
 
 ```python
-        for c, entry, rung, message, _ceiling in batch:
-            try:
-                desktop_notify("Sundial", message)
-                chime(rung, state, audible)
                 if rung == 3:
                     speak_final(message, audible,
                                 force=(policy.tier_of(c) == "high"))
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `python3 -m pytest tests/test_sundial.py -q`
-Expected: PASS (190 total)
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add watcher/watcher.py tests/test_sundial.py
-git commit -m "feat(watcher): high tier speaks the final rung unprompted"
-```
+- [ ] **Step 4: Run PASS** — `python3 -m pytest tests/test_sundial.py -q` → 194.
+- [ ] **Step 5: Commit** — `git add watcher/watcher.py tests/test_sundial.py && git commit -m "feat(watcher): high tier speaks the (honest) final rung unprompted"`
 
 ---
 
-## SLICE ② — Confidence + reversibility + autonomy gate
+## SLICE ② — Confidence + reversibility + autonomy gate (≥0.95-only, v1)
 
-### Task 5: `policy.autonomy_decision` (the safety-critical core)
+### Task 6: `policy.autonomy_decision` (safety-critical, simplified)
 
-**Files:**
-- Modify: `lib/policy.py` (add constants + function)
-- Test: `tests/test_sundial.py` (new class `TestAutonomyGate`)
+**Files:** Modify `lib/policy.py`; Test: new class `TestAutonomyGate`.
+**Interfaces produced:** `autonomy_decision(commitment, entry=None) -> {"action","reason"}`, `action ∈ {"require_explicit_yes","proceed","stand_down"}`. Pure & total. Constant `AUTONOMY_PROCEED_MIN = 0.95`.
 
-**Interfaces:**
-- Produces: `autonomy_decision(commitment: dict, entry: dict) -> {"action": str, "reason": str}` where `action ∈ {"require_explicit_yes", "proceed", "stand_down"}`. Pure and total (never raises).
-- Constants: `AUTONOMY_PROCEED_UNATTENDED = 0.95`, `AUTONOMY_PROCEED_PRESENT = 0.80`, `AUTONOMY_PRESENT_MIN_S = 60.0`.
+> Present-silence deferred (audit S1). `entry` is accepted for signature stability / future use but not consulted in v1.
 
-- [ ] **Step 1: Write the failing test**:
+- [ ] **Step 1: Failing test**:
 
 ```python
 class TestAutonomyGate(unittest.TestCase):
-    def _e(self, here=0.0):
-        return {"here_s": here, "unseen_s": 0.0, "count": 3}
-
     def test_irreversible_never_proceeds(self):
-        for here in (0.0, 10000.0):  # absent OR long-present
-            d = policy.autonomy_decision({"irreversible": True, "confidence": 0.99},
-                                         self._e(here))
-            self.assertEqual(d["action"], "require_explicit_yes")
+        d = policy.autonomy_decision({"irreversible": True, "confidence": 0.99})
+        self.assertEqual(d["action"], "require_explicit_yes")
 
-    def test_reversible_high_confidence_proceeds_unattended(self):
-        d = policy.autonomy_decision({"confidence": 0.95}, self._e(here=0.0))
-        self.assertEqual(d["action"], "proceed")
+    def test_high_confidence_reversible_proceeds(self):
+        self.assertEqual(policy.autonomy_decision({"confidence": 0.95})["action"], "proceed")
+        self.assertEqual(policy.autonomy_decision({"confidence": 0.99})["action"], "proceed")
 
-    def test_reversible_mid_confidence_needs_present_silence(self):
-        # present (here_s ≥ 60) → proceed
-        d = policy.autonomy_decision({"confidence": 0.80}, self._e(here=60.0))
-        self.assertEqual(d["action"], "proceed")
-        # absent (here_s < 60) → stand down
-        d2 = policy.autonomy_decision({"confidence": 0.80}, self._e(here=0.0))
-        self.assertEqual(d2["action"], "stand_down")
+    def test_below_bar_stands_down(self):
+        for conf in (0.0, 0.5, 0.8, 0.9499):
+            self.assertEqual(policy.autonomy_decision({"confidence": conf})["action"],
+                             "stand_down", f"conf={conf}")
 
-    def test_reversible_low_confidence_stands_down(self):
-        d = policy.autonomy_decision({"confidence": 0.5}, self._e(here=10000.0))
-        self.assertEqual(d["action"], "stand_down")
+    def test_no_or_garbage_confidence_stands_down(self):
+        for c in ({}, {"confidence": None}, {"confidence": "high"}):
+            self.assertEqual(policy.autonomy_decision(c)["action"], "stand_down")
 
-    def test_no_confidence_stands_down(self):
-        d = policy.autonomy_decision({}, self._e(here=10000.0))
-        self.assertEqual(d["action"], "stand_down")
-
-    def test_total_never_raises_on_garbage(self):
-        for c, e in (({"confidence": "high"}, {}), ({}, None),
-                     ({"confidence": None}, {"here_s": "x"})):
-            d = policy.autonomy_decision(c, e if e is not None else {})
-            self.assertIn(d["action"],
+    def test_total_never_raises(self):
+        for c in (None, {"irreversible": "yes"}, {"confidence": 1.0}):
+            self.assertIn(policy.autonomy_decision(c)["action"],
                           ("require_explicit_yes", "proceed", "stand_down"))
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run FAIL** — no attribute `autonomy_decision`.
 
-Run: `python3 -m pytest tests/test_sundial.py::TestAutonomyGate -q`
-Expected: FAIL — `module 'policy' has no attribute 'autonomy_decision'`
-
-- [ ] **Step 3: Write minimal implementation** — append to `lib/policy.py`:
+- [ ] **Step 3: Implement** — append to `lib/policy.py`:
 
 ```python
-AUTONOMY_PROCEED_UNATTENDED = 0.95   # reversible: act even on silence-while-absent
-AUTONOMY_PROCEED_PRESENT = 0.80      # reversible: act on silence-while-PRESENT
-AUTONOMY_PRESENT_MIN_S = 60.0        # here_s ≥ this = "they saw it and stayed silent"
+AUTONOMY_PROCEED_MIN = 0.95   # reversible actions proceed unattended at/above this
 
 
-def autonomy_decision(commitment: dict, entry: dict) -> dict:
-    """Pure, total gate. Given a commitment (weight/confidence/irreversible)
-    and its notified entry (here_s), decide what the agent may do when the
-    escalation ladder is exhausted and the human still hasn't answered.
+def autonomy_decision(commitment: dict, entry: dict | None = None) -> dict:
+    """Pure, total gate. Given a commitment (confidence/irreversible), decide
+    what the agent may do once the ladder is exhausted and the human still
+    hasn't answered.
 
-    action ∈ {require_explicit_yes, proceed, stand_down}. Never raises: any
-    malformed input degrades to the safest outcome (stand_down)."""
+    v1 rule (present-silence deferred — see spec):
+      - irreversible            -> require_explicit_yes (no silence ever authorizes)
+      - reversible, conf ≥ 0.95 -> proceed
+      - otherwise               -> stand_down
+
+    Never raises; any malformed input degrades to the safest outcome."""
     commitment = commitment or {}
-    entry = entry or {}
     if commitment.get("irreversible"):
         return {"action": "require_explicit_yes",
                 "reason": "irreversible: no silence ever authorizes it"}
-    conf = commitment.get("confidence")
     try:
-        conf = float(conf)
+        conf = float(commitment.get("confidence"))
     except (TypeError, ValueError):
         return {"action": "stand_down", "reason": "no usable confidence stated"}
-    try:
-        here_s = float(entry.get("here_s", 0.0))
-    except (TypeError, ValueError):
-        here_s = 0.0
-    present_silence = here_s >= AUTONOMY_PRESENT_MIN_S
-    if conf >= AUTONOMY_PROCEED_UNATTENDED:
+    if conf >= AUTONOMY_PROCEED_MIN:
         return {"action": "proceed",
-                "reason": f"confidence {conf:.2f} ≥ {AUTONOMY_PROCEED_UNATTENDED} (unattended ok)"}
-    if conf >= AUTONOMY_PROCEED_PRESENT and present_silence:
-        return {"action": "proceed",
-                "reason": f"confidence {conf:.2f} ≥ {AUTONOMY_PROCEED_PRESENT} + present-silence"}
+                "reason": f"confidence {conf:.2f} ≥ {AUTONOMY_PROCEED_MIN}"}
     return {"action": "stand_down",
-            "reason": f"confidence {conf:.2f} below bar (present_silence={present_silence})"}
+            "reason": f"confidence {conf:.2f} below {AUTONOMY_PROCEED_MIN}"}
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run PASS** — `python3 -m pytest tests/test_sundial.py::TestAutonomyGate -q` → 5 pass.
+- [ ] **Step 5: Commit** — `git add lib/policy.py tests/test_sundial.py && git commit -m "feat(policy): autonomy gate — irreversible hard-stop + ≥0.95 proceed"`
 
-Run: `python3 -m pytest tests/test_sundial.py::TestAutonomyGate -q`
-Expected: PASS (6 tests)
+### Task 7: store `confidence`/`irreversible`/`default_action`; ask flags
 
-- [ ] **Step 5: Commit**
+**Files:** Modify `lib/core.py`, `cli/ask.py`; Test: `TestCore`.
+**Interfaces:** `core.add_commitment(..., confidence=None, irreversible=False, default_action=None)`.
 
-```bash
-git add lib/policy.py tests/test_sundial.py
-git commit -m "feat(policy): autonomy_decision gate (irreversible hard-stop, two-clock)"
-```
-
-### Task 6: Store `confidence`/`irreversible`/`default_action`; ask flags
-
-**Files:**
-- Modify: `lib/core.py` (`add_commitment` signature + record)
-- Modify: `cli/ask.py`
-- Test: `tests/test_sundial.py::TestCore` (new method)
-
-**Interfaces:**
-- Produces: `core.add_commitment(..., weight=None, confidence=None, irreversible=False, default_action=None)`.
-
-- [ ] **Step 1: Write the failing test** — add to `TestCore`:
+- [ ] **Step 1: Failing test** — add to `TestCore`:
 
 ```python
     def test_add_commitment_stores_policy_fields(self):
-        rec = core.add_commitment(
-            "drop col?", "+0m", kind="awaiting-reply",
-            confidence=0.9, irreversible=True, default_action="back up then halt")
+        rec = core.add_commitment("drop col?", "+0m", kind="awaiting-reply",
+                                  confidence=0.9, irreversible=True,
+                                  default_action="back up then halt")
         self.assertEqual(rec["confidence"], 0.9)
         self.assertTrue(rec["irreversible"])
         self.assertEqual(rec["default_action"], "back up then halt")
-        # defaults absent → keys omitted
         bare = core.add_commitment("q?", "+0m", kind="awaiting-reply")
         for k in ("confidence", "irreversible", "default_action"):
             self.assertNotIn(k, bare)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run FAIL** — unexpected keyword `confidence`.
 
-Run: `python3 -m pytest tests/test_sundial.py::TestCore::test_add_commitment_stores_policy_fields -q`
-Expected: FAIL — unexpected keyword argument `confidence`
-
-- [ ] **Step 3: Write minimal implementation** — extend `add_commitment` in `lib/core.py`:
-
-```python
-def add_commitment(text: str, due_str: str | None = None, source: str = "manual",
-                   kind: str = "plain", session_id: str | None = None,
-                   weight: str | None = None, confidence: float | None = None,
-                   irreversible: bool = False,
-                   default_action: str | None = None) -> dict:
-```
-
-After the existing `if weight ...:` line, add:
+- [ ] **Step 3: Implement** — extend `add_commitment` signature with `confidence: float | None = None, irreversible: bool = False, default_action: str | None = None`, and after the `weight` block add:
 
 ```python
         if confidence is not None:
@@ -528,7 +481,7 @@ After the existing `if weight ...:` line, add:
             rec["default_action"] = default_action
 ```
 
-In `cli/ask.py`, add the flags (before `args = ap.parse_args()`):
+In `cli/ask.py` add flags before parse:
 
 ```python
     ap.add_argument("--confidence", type=float, default=None,
@@ -536,44 +489,27 @@ In `cli/ask.py`, add the flags (before `args = ap.parse_args()`):
     ap.add_argument("--irreversible", action="store_true",
                     help="destructive/one-way; never auto-proceeds on silence")
     ap.add_argument("--default", dest="default_action", default=None,
-                    help="the action taken if you never answer (stated in final rung)")
+                    help="action taken if you never answer (stated in the final rung)")
 ```
 
-Validate confidence and pass through (replace the `add_commitment` call):
+After parse, validate and pass through:
 
 ```python
     if args.confidence is not None and not (0.0 <= args.confidence <= 1.0):
         ap.error("--confidence must be between 0 and 1")
-
-    rec = core.add_commitment(args.text, args.due, args.source,
-                              kind="awaiting-reply", session_id=args.session,
-                              weight=args.weight, confidence=args.confidence,
-                              irreversible=args.irreversible,
-                              default_action=args.default_action)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+Add `confidence=args.confidence, irreversible=args.irreversible, default_action=args.default_action` to the `add_commitment(...)` call.
 
-Run: `python3 -m pytest tests/test_sundial.py -q`
-Expected: PASS (197 total)
+- [ ] **Step 4: Run PASS** — `python3 -m pytest tests/test_sundial.py -q` → 195.
+- [ ] **Step 5: Commit** — `git add lib/core.py cli/ask.py tests/test_sundial.py && git commit -m "feat(ask): --confidence/--irreversible/--default policy fields"`
 
-- [ ] **Step 5: Commit**
+### Task 8: `session_start` surfaces autonomy verdicts for exhausted asks
 
-```bash
-git add lib/core.py cli/ask.py tests/test_sundial.py
-git commit -m "feat(ask): --confidence/--irreversible/--default policy fields"
-```
+**Files:** Modify `hooks/session_start.py` (`build_block`); Test: `TestSessionStartHook`.
+**Interfaces consumed:** `policy.autonomy_decision`, `policy.TIER_TABLE`, `policy.tier_of`; reads `core.DATA/"notified.json"`.
 
-### Task 7: `session_start` surfaces autonomy verdicts
-
-**Files:**
-- Modify: `hooks/session_start.py` (`build_block`)
-- Test: `tests/test_sundial.py::TestSessionStartHook` (new method)
-
-**Interfaces:**
-- Consumes: `policy.autonomy_decision`, `policy.TIER_TABLE`, `policy.tier_of`; reads `core.DATA/"notified.json"`.
-
-- [ ] **Step 1: Write the failing test** — add to `TestSessionStartHook`:
+- [ ] **Step 1: Failing test** — add to `TestSessionStartHook`:
 
 ```python
     def test_verdict_block_for_exhausted_ask(self):
@@ -586,7 +522,6 @@ git commit -m "feat(ask): --confidence/--irreversible/--default policy fields"
             core.LEDGER = dd / "session-ledger.json"
             try:
                 birth = core.get_or_create_birth()
-                # a high-confidence reversible ask, escalation exhausted (count=3)
                 rec = core.add_commitment("ship the copy?", "+0m",
                                           kind="awaiting-reply", confidence=0.97)
                 core.write_json(dd / "notified.json",
@@ -599,15 +534,13 @@ git commit -m "feat(ask): --confidence/--irreversible/--default policy fields"
                 (core.DATA, core.COMMITMENTS, core.BIRTH, core.LEDGER) = orig
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run FAIL** — "Escalation exhausted" absent.
 
-Run: `python3 -m pytest tests/test_sundial.py::TestSessionStartHook::test_verdict_block_for_exhausted_ask -q`
-Expected: FAIL — "Escalation exhausted" not in the block
-
-- [ ] **Step 3: Write minimal implementation** — in `hooks/session_start.py`, inside `build_block`, immediately BEFORE the `lines.append("\nThis is passive background awareness...")` line, insert:
+- [ ] **Step 3: Implement** — in `hooks/session_start.py`, inside `build_block`, immediately BEFORE the `lines.append("\nThis is passive background awareness...")` line, insert:
 
 ```python
     try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
         import policy
         notified = core.read_json(core.DATA / "notified.json", {})
         notified = notified if isinstance(notified, dict) else {}
@@ -618,110 +551,77 @@ Expected: FAIL — "Escalation exhausted" not in the block
             entry = notified.get(c.get("id"))
             if not isinstance(entry, dict):
                 continue
-            max_rung = policy.TIER_TABLE[policy.tier_of(c)]["rungs"]
-            if entry.get("count", 0) < max_rung:
-                continue  # ladder not yet exhausted — the human may still answer
-            v = policy.autonomy_decision(c, entry)
-            verdicts.append((c, v))
+            if entry.get("count", 0) < policy.TIER_TABLE[policy.tier_of(c)]["rungs"]:
+                continue  # ladder not exhausted — the human may still answer
+            verdicts.append((c, policy.autonomy_decision(c, entry)))
         if verdicts:
             lines.append(f"\nEscalation exhausted, your call needed ({len(verdicts)}):")
             for c, v in verdicts[:10]:
-                text = str(c.get("text", ""))[:120]
                 da = c.get("default_action")
                 tail = f" → default: {da}" if da else ""
-                lines.append(f"  - [{v['action'].upper()}] {text}{tail} ({v['reason']})")
+                lines.append(f"  - [{v['action'].upper()}] "
+                             f"{str(c.get('text',''))[:120]}{tail} ({v['reason']})")
     except Exception:
         pass
 ```
 
-(`policy` is importable — `build_block`'s caller and the opportunities block already add `lib`/`watcher` to `sys.path`; add `sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))` at the top of this try-block if `policy` fails to import in isolation.)
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `python3 -m pytest tests/test_sundial.py -q`
-Expected: PASS (198 total)
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add hooks/session_start.py tests/test_sundial.py
-git commit -m "feat(hook): surface autonomy verdicts for exhausted asks on session start"
-```
+- [ ] **Step 4: Run PASS** — `python3 -m pytest tests/test_sundial.py -q` → 196.
+- [ ] **Step 5: Commit** — `git add hooks/session_start.py tests/test_sundial.py && git commit -m "feat(hook): surface autonomy verdicts for exhausted asks on session start"`
 
 ---
 
 ## SLICE ③ — Agent-authored rung messages
 
-### Task 8: Store `rungs`; add repeatable `--rung`
+### Task 9: store `rungs`; `sundial ask --rung` (repeatable ≤3)
 
-**Files:**
-- Modify: `lib/core.py` (`add_commitment`)
-- Modify: `cli/ask.py`
-- Test: `tests/test_sundial.py::TestCore` (new method)
+**Files:** Modify `lib/core.py`, `cli/ask.py`; Test: `TestCore`.
+**Interfaces:** `core.add_commitment(..., rungs=None)` stores ≤3 strings.
 
-**Interfaces:**
-- Produces: `core.add_commitment(..., rungs=None)` stores a list of ≤3 pre-composed strings.
-
-- [ ] **Step 1: Write the failing test** — add to `TestCore`:
+- [ ] **Step 1: Failing test** — add to `TestCore`:
 
 ```python
     def test_add_commitment_stores_rungs(self):
         rec = core.add_commitment("q?", "+0m", kind="awaiting-reply",
                                   rungs=["knock one", "knock two", "final call"])
         self.assertEqual(rec["rungs"], ["knock one", "knock two", "final call"])
-        self.assertNotIn("rungs", core.add_commitment("q2?", "+0m",
-                                                       kind="awaiting-reply"))
+        self.assertNotIn("rungs",
+                         core.add_commitment("q2?", "+0m", kind="awaiting-reply"))
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run FAIL** — unexpected keyword `rungs`.
 
-Run: `python3 -m pytest tests/test_sundial.py::TestCore::test_add_commitment_stores_rungs -q`
-Expected: FAIL — unexpected keyword argument `rungs`
-
-- [ ] **Step 3: Write minimal implementation** — add `rungs: list | None = None` to the `add_commitment` signature (end of params) and after the `default_action` block:
+- [ ] **Step 3: Implement** — add `rungs: list | None = None` to `add_commitment`'s signature (last param) and after the `default_action` block:
 
 ```python
         if rungs:
             rec["rungs"] = [str(r) for r in rungs][:3]
 ```
 
-In `cli/ask.py`, add the flag:
+In `cli/ask.py` add:
 
 ```python
     ap.add_argument("--rung", action="append", dest="rungs", default=None,
                     help="pre-composed message for a rung (repeat ≤3, in order)")
 ```
 
-Validate and pass through (add before the `add_commitment` call, and add `rungs=args.rungs` to it):
+After parse:
 
 ```python
     if args.rungs and len(args.rungs) > 3:
         ap.error("at most 3 --rung messages")
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+Add `rungs=args.rungs` to the `add_commitment(...)` call.
 
-Run: `python3 -m pytest tests/test_sundial.py -q`
-Expected: PASS (199 total)
+- [ ] **Step 4: Run PASS** — `python3 -m pytest tests/test_sundial.py -q` → 197.
+- [ ] **Step 5: Commit** — `git add lib/core.py cli/ask.py tests/test_sundial.py && git commit -m "feat(ask): --rung stores agent-authored per-rung voice"`
 
-- [ ] **Step 5: Commit**
+### Task 10: watcher replays stored rungs
 
-```bash
-git add lib/core.py cli/ask.py tests/test_sundial.py
-git commit -m "feat(ask): --rung stores agent-authored per-rung voice"
-```
+**Files:** `watcher/watcher.py` `pending_ping` already prefers `c["rungs"]` (path 1, written in Task 4). This task only adds the test proving it, since the code path already exists.
+**Test:** `TestAbsenceClock`.
 
-### Task 9: Watcher replays stored rungs + appends `default_action`
-
-**Files:**
-- Modify: `watcher/watcher.py` (`pending_ping`)
-- Test: `tests/test_sundial.py::TestAbsenceClock` (new methods)
-
-**Interfaces:**
-- Consumes: commitment `rungs` list + `default_action`.
-- Produces: `pending_ping` prefers `c["rungs"][rung-1]`; the final rung appends the default-action clause. Falls back to the static pools when `rungs` absent.
-
-- [ ] **Step 1: Write the failing test** — add to `TestAbsenceClock`:
+- [ ] **Step 1: Failing test** — add to `TestAbsenceClock`:
 
 ```python
     def test_pending_ping_uses_stored_rungs(self):
@@ -731,7 +631,7 @@ git commit -m "feat(ask): --rung stores agent-authored per-rung voice"
         self.assertEqual(hit[0], 1)
         self.assertIn("my rung one", hit[1])
 
-    def test_final_rung_appends_default_action(self):
+    def test_stored_final_rung_appends_default_action(self):
         c, now = self._c(60)
         c["rungs"] = ["r1", "r2", "final call"]
         c["default_action"] = "back up then halt"
@@ -739,64 +639,27 @@ git commit -m "feat(ask): --rung stores agent-authored per-rung voice"
         self.assertEqual(hit[0], 3)
         self.assertIn("back up then halt", hit[1])
 
-    def test_no_rungs_falls_back_to_pools(self):
-        c, now = self._c(60)  # no rungs key
+    def test_no_rungs_falls_back_to_pool(self):
+        c, now = self._c(60)
         hit = watcher.pending_ping(c, self._entry(unseen=600), now, "away", None)
-        self.assertIsNotNone(hit)
-        self.assertNotIn("my rung one", hit[1])  # came from a static pool
+        self.assertNotIn("my rung one", hit[1])
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run** — `python3 -m pytest tests/test_sundial.py::TestAbsenceClock -q -k "stored_rungs or stored_final or no_rungs"`. These should PASS immediately (path 1 was built in Task 4). If any fails, the Task-4 `pending_ping` is wrong — fix it there.
 
-Run: `python3 -m pytest tests/test_sundial.py::TestAbsenceClock -q -k "stored_rungs or default_action or falls_back"`
-Expected: FAIL — stored rungs ignored
-
-- [ ] **Step 3: Write minimal implementation** — in `watcher/watcher.py`, replace the tail of `pending_ping` (the part after `text, cid = ...`) so stored rungs win:
-
-```python
-    text, cid = c.get("text", ""), c.get("id", "")
-    stored = c.get("rungs")
-    if isinstance(stored, list) and len(stored) >= ripe and stored[ripe - 1]:
-        msg = str(stored[ripe - 1])
-        if ripe == policy.TIER_TABLE[policy.tier_of(c)]["rungs"]:
-            da = c.get("default_action")
-            if da:
-                msg = f"{msg} — proceeding to {da} or standing down."
-        return ripe, _cap_message(msg)
-    if c.get("kind") != "awaiting-reply":
-        return ripe, pick_message(cid, PLAIN_POOL, text=text)
-    if state == "elsewhere" and app:
-        pool = ELSEWHERE_POOLS[ripe - 1]
-        return ripe, pick_message(cid, pool, text=text, app=app)
-    return ripe, pick_message(cid, RUNG_POOLS[ripe - 1], text=text)
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `python3 -m pytest tests/test_sundial.py -q`
-Expected: PASS (202 total)
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add watcher/watcher.py tests/test_sundial.py
-git commit -m "feat(watcher): replay agent-authored rungs + state the specific default"
-```
+- [ ] **Step 3:** (no new impl — coverage task) confirm the whole suite: `python3 -m pytest tests/test_sundial.py -q` → 200.
+- [ ] **Step 4: Commit** — `git add tests/test_sundial.py && git commit -m "test(watcher): stored-rung replay + default-action append"`
 
 ---
 
 ## SLICE ④ — SwiftBar instant-sync
 
-### Task 10: `core.refresh_menubar()` + test seam
+### Task 11: `core.refresh_menubar()` + seam
 
-**Files:**
-- Modify: `lib/core.py` (add helper + seam)
-- Test: `tests/test_sundial.py` (new class `TestMenubarSync`)
+**Files:** Modify `lib/core.py` (add `import subprocess`, helper + seam); Test: new class `TestMenubarSync`.
+**Interfaces produced:** `core.refresh_menubar() -> None` (fail-safe); `core._menubar_spawn(cmd)` (seam).
 
-**Interfaces:**
-- Produces: `core.refresh_menubar() -> None` (fail-safe); `core._menubar_spawn(cmd)` (replaceable seam).
-
-- [ ] **Step 1: Write the failing test**:
+- [ ] **Step 1: Failing test**:
 
 ```python
 class TestMenubarSync(unittest.TestCase):
@@ -813,21 +676,16 @@ class TestMenubarSync(unittest.TestCase):
 
     def test_refresh_never_raises(self):
         orig = core._menubar_spawn
-        def boom(cmd):
-            raise OSError("no swiftbar")
-        core._menubar_spawn = boom
+        core._menubar_spawn = lambda cmd: (_ for _ in ()).throw(OSError("no swiftbar"))
         try:
-            core.refresh_menubar()  # must swallow
+            core.refresh_menubar()   # must swallow
         finally:
             core._menubar_spawn = orig
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run FAIL** — no attribute `_menubar_spawn`.
 
-Run: `python3 -m pytest tests/test_sundial.py::TestMenubarSync -q`
-Expected: FAIL — `module 'core' has no attribute '_menubar_spawn'`
-
-- [ ] **Step 3: Write minimal implementation** — add to `lib/core.py` (add `import subprocess` to the imports at the top of the file):
+- [ ] **Step 3: Implement** — add `import subprocess` to `lib/core.py`'s imports, then:
 
 ```python
 def _menubar_spawn(cmd) -> None:
@@ -846,28 +704,21 @@ def refresh_menubar() -> None:
         pass
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run PASS** — `python3 -m pytest tests/test_sundial.py -q` → 202.
+- [ ] **Step 5: Commit** — `git add lib/core.py tests/test_sundial.py && git commit -m "feat(core): refresh_menubar — push SwiftBar to re-read on demand"`
 
-Run: `python3 -m pytest tests/test_sundial.py -q`
-Expected: PASS (204 total)
+### Task 12: watcher refreshes on state change (+ stub existing tests)
 
-- [ ] **Step 5: Commit**
+**Files:** Modify `watcher/watcher.py` (`run_cycle`), and `TestAbsenceClock.setUp`/`tearDown` to stub `core._menubar_spawn`; Test: `TestAbsenceClock`.
 
-```bash
-git add lib/core.py tests/test_sundial.py
-git commit -m "feat(core): refresh_menubar — push SwiftBar to re-read on demand"
+- [ ] **Step 1: Failing test** — first, in `TestAbsenceClock.setUp`, add (so the existing ~15 run_cycle tests never fire a real `open`):
+
+```python
+        self._orig_menubar = core._menubar_spawn
+        core._menubar_spawn = lambda cmd: None
 ```
 
-### Task 11: Watcher refreshes the menu bar on state change
-
-**Files:**
-- Modify: `watcher/watcher.py` (`run_cycle`)
-- Test: `tests/test_sundial.py::TestAbsenceClock` (new method)
-
-**Interfaces:**
-- Consumes: `core.refresh_menubar`.
-
-- [ ] **Step 1: Write the failing test** — add to `TestAbsenceClock` (mirrors `test_run_cycle_holds_while_here_and_accrues`'s stubbing, but with an AWAY presence so a fire happens):
+and in `tearDown`: `core._menubar_spawn = self._orig_menubar`. Then add the test:
 
 ```python
     def test_run_cycle_refreshes_menubar_on_fire(self):
@@ -893,7 +744,7 @@ git commit -m "feat(core): refresh_menubar — push SwiftBar to re-read on deman
             try:
                 core.add_commitment("q?", "+0m", kind="awaiting-reply")
                 watcher.run_cycle(force=True)
-                self.assertTrue(refreshed)  # a fire → menu bar refreshed
+                self.assertTrue(refreshed)
             finally:
                 (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                  watcher.sample_presence, watcher.desktop_notify,
@@ -902,50 +753,34 @@ git commit -m "feat(core): refresh_menubar — push SwiftBar to re-read on deman
                  watcher.sample_builds, core._menubar_spawn) = orig
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run FAIL** — `refreshed` empty.
 
-Run: `python3 -m pytest tests/test_sundial.py::TestAbsenceClock::test_run_cycle_refreshes_menubar_on_fire -q`
-Expected: FAIL — `refreshed` is empty
-
-- [ ] **Step 3: Write minimal implementation** — in `run_cycle`, add near the top (right after `prev = record_presence(snap, now)`):
+- [ ] **Step 3: Implement** — in `run_cycle`, right after `prev = record_presence(snap, now)` add:
 
 ```python
     state_changed = (prev.get("state") != snap["state"])
 ```
 
-At the two fire sites, set the flag. In the return-nudge branch, after `dirty = True`, add `state_changed = True`. In the batch fire loop, after its `dirty = True`, add `state_changed = True`. In the meeting/build offer branches, after each `opportunities.count_offer(today)`, add `state_changed = True`.
-
-At the very end of `run_cycle` (after the `if dirty: core.write_json(NOTIFIED, notified)` block), add:
+In the return-nudge branch, after its `dirty = True`, add `state_changed = True`.
+In the batch fire loop, after its `dirty = True`, add `state_changed = True`.
+After each `opportunities.count_offer(today)` (both the meeting and build branches), add `state_changed = True`.
+At the very end of `run_cycle`, after the `if dirty: core.write_json(NOTIFIED, notified)` block, add:
 
 ```python
     if state_changed or dirty:
         core.refresh_menubar()
 ```
 
-(`state_changed` is assigned once and only ever flipped to True, so the offer branches inside the `try` can set it without a `nonlocal`/scoping issue — it's a plain local in `run_cycle`.)
+(`state_changed` is a plain local, only ever flipped True; the offer branches are a bare `try`, so no `nonlocal` needed.)
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run PASS** — `python3 -m pytest tests/test_sundial.py -q` → 203.
+- [ ] **Step 5: Commit** — `git add watcher/watcher.py tests/test_sundial.py && git commit -m "feat(watcher): refresh menu bar on fire / offer / presence change"`
 
-Run: `python3 -m pytest tests/test_sundial.py -q`
-Expected: PASS (205 total)
+### Task 13: CLI verbs + prompt hook refresh the menu bar
 
-- [ ] **Step 5: Commit**
+**Files:** Modify `cli/ask.py`, `cli/answered.py`, `cli/done.py`, `cli/remember.py`, `cli/decline.py`, `cli/allow.py`, `hooks/prompt_submit.py`; Test: `TestPromptSubmitHook`.
 
-```bash
-git add watcher/watcher.py tests/test_sundial.py
-git commit -m "feat(watcher): refresh menu bar on fire / offer / presence change"
-```
-
-### Task 12: CLI verbs + prompt hook refresh the menu bar
-
-**Files:**
-- Modify: `cli/ask.py`, `cli/answered.py`, `cli/done.py`, `cli/remember.py`, `cli/decline.py`, `cli/allow.py`, `hooks/prompt_submit.py`
-- Test: `tests/test_sundial.py::TestPromptSubmitHook` (new method)
-
-**Interfaces:**
-- Consumes: `core.refresh_menubar`.
-
-- [ ] **Step 1: Write the failing test** — add to `TestPromptSubmitHook` (it already redirects `core.DATA`/`core.COMMITMENTS`). Assert that disarming an ask on a human prompt refreshes the bar:
+- [ ] **Step 1: Failing test** — add to `TestPromptSubmitHook`:
 
 ```python
     def test_disarm_refreshes_menubar(self):
@@ -954,54 +789,51 @@ git commit -m "feat(watcher): refresh menu bar on fire / offer / presence change
         core._menubar_spawn = lambda cmd: refreshed.append(cmd)
         try:
             core.add_commitment("q?", "+0m", kind="awaiting-reply")
-            prompt_submit.build_context({"prompt": "hello",
-                                         "transcript_path": None})
-            self.assertTrue(refreshed)  # disarm changed state → bar refreshed
+            prompt_submit.build_context(core, {"prompt": "hello",
+                                               "transcript_path": None})
+            self.assertTrue(refreshed)
         finally:
             core._menubar_spawn = orig
 ```
 
-(If `build_context`'s signature in this repo differs, match the existing call convention used by the other `TestPromptSubmitHook` tests — the assertion is the point: a disarm triggers a refresh.)
+(Real signature is `build_context(core, data=None)` — first arg is the `core` module.)
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run FAIL** — `refreshed` empty.
 
-Run: `python3 -m pytest tests/test_sundial.py::TestPromptSubmitHook::test_disarm_refreshes_menubar -q`
-Expected: FAIL — `refreshed` empty
+- [ ] **Step 3: Implement:**
 
-- [ ] **Step 3: Write minimal implementation:**
+`cli/ask.py`, `cli/answered.py`, `cli/done.py`, `cli/remember.py`: add `core.refresh_menubar()` as the last line of `main()` (each already imports `core`).
 
-In each of `cli/ask.py`, `cli/answered.py`, `cli/done.py`, `cli/remember.py`, `cli/decline.py`, `cli/allow.py`: add `core.refresh_menubar()` as the last line of `main()` (after the `print(...)`). `core` is already imported in each.
-
-In `hooks/prompt_submit.py`: after the block that calls `core.close_awaiting_detailed()` (the disarm), add — guarded so a no-op prompt with nothing to disarm still stays cheap but correct:
+`cli/decline.py` and `cli/allow.py`: they import only `opportunities`. Add core to path + import at the top (after the existing `sys.path.insert(... "watcher")` block):
 
 ```python
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import core  # noqa: E402
+```
+
+then add `core.refresh_menubar()` as the last line of `main()`.
+
+`hooks/prompt_submit.py`: `build_context` starts with `closed = core.close_awaiting_detailed()`. After that assignment, add:
+
+```python
+    if closed:
         core.refresh_menubar()
 ```
 
-Place it where the closed-count is known so it only fires when something actually closed (if the hook tracks the closed list, gate on it: `if closed: core.refresh_menubar()`).
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `python3 -m pytest tests/test_sundial.py -q`
-Expected: PASS (206 total)
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add cli/ hooks/prompt_submit.py tests/test_sundial.py
-git commit -m "feat(cli): every state-mutating verb + disarm refreshes the menu bar"
-```
+- [ ] **Step 4: Run PASS** — `python3 -m pytest tests/test_sundial.py -q` → ~209 (all green).
+- [ ] **Step 5: Commit** — `git add cli/ hooks/prompt_submit.py tests/test_sundial.py && git commit -m "feat(cli): every state-mutating verb + disarm refreshes the menu bar"`
 
 ---
 
 ## Final verification
 
-- [ ] Run the whole suite: `python3 -m pytest tests/ -q` → **all green (~206 tests)**.
-- [ ] Lint: `ruff check .` (repo ships a `.ruff_cache`, so ruff is the house linter) → clean.
-- [ ] Manual drive (documented in the verify task, not a unit test): arm `sundial ask "x" --weight high --confidence 0.9 --default "do y"`, confirm the record, confirm `sundial due` shows the tier, and confirm SwiftBar refreshes immediately after `sundial done <id>`.
+- [ ] Full suite: `python3 -m pytest tests/ -q` → **all green (~209)**.
+- [ ] Lint: `ruff check .` → clean.
+- [ ] Manual drive: `sundial ask "x" --weight high --confidence 0.9 --default "do y"`; confirm the record has `weight/confidence/default_action`; confirm SwiftBar badge updates immediately after `sundial done <id>`.
 
-## Self-review notes (author)
+## Self-review (author, rev 2)
 
-- **Spec coverage:** ① Tasks 1–4; ② Tasks 5–7; ③ Tasks 8–9; ④ Tasks 10–12. `--weight/--confidence/--irreversible/--default/--rung` all covered. Autonomy gate truth table exhaustive in Task 5. Delivery-never-suppressed rail is preserved (tiering only changes timings/sound, never gates a popup) and re-checked in the audit.
-- **The one open tunable** (0.80/0.95 bars, `AUTONOMY_PRESENT_MIN_S`) is isolated to named constants in `policy.py` — retune without touching logic.
-- **Backward-compat:** every new `add_commitment` param defaults to the absent/legacy behavior; the `normal` tier row equals the old constants; stored-rungs fall back to pools. All 184 existing tests must stay green after each task.
+- **Audit coverage:** S1 present-silence → deferred (gate is ≥0.95-only, Task 6). B1/B2 honesty → Task 4 (number-free tier copy + terminal contract). Mechanical B1 (test age) → Task 2 `_c(30)`. build_context signature → Task 13. decline/allow imports → Task 13. `_menubar_spawn` stub in existing tests → Task 12 setUp. Test counts → corrected (end ~209).
+- **Backward-compat:** `normal` row == legacy; all new params default to omit-the-key; `tier_of`/`autonomy_decision`/`pending_ping` on an old record never KeyError; normal-tier message path (Task 4 path 4) is the original code verbatim.
+- **Safety:** irreversible can never proceed (checked first, before confidence parse); gate is pure/total; verdicts are advisory to the agent, never executed by the watcher.
+- **Deferred (documented):** present-silence consent, once `here_s` accrual is ripeness-gated and `"present"` excluded; reconciling the README "90-minute wall ceiling" wording with per-tier ceilings.

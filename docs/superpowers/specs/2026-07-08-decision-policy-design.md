@@ -86,27 +86,27 @@ governed rule:
 
 - **Irreversible** → `require_explicit_yes`. No silence ever authorizes. Always.
 - **Reversible:**
-  - `confidence ≥ 0.95` → `proceed` (even on silence-while-absent).
-  - `0.80 ≤ confidence < 0.95` **and** silence-while-**present** → `proceed`.
+  - `confidence ≥ 0.95` → `proceed`.
   - else → `stand_down` (park + logged reason).
 
-Thresholds `AUTONOMY_PROCEED_UNATTENDED = 0.95` and `AUTONOMY_PROCEED_PRESENT = 0.80` are named
-constants (single tunable point; flagged for the audit).
+Threshold `AUTONOMY_PROCEED_MIN = 0.95` is a single named constant.
 
-**Two-clock inputs** come from the notified-entry accrual already tracked (`unseen_s` vs
-`here_s`). Operational predicate (removes ambiguity): **present-silence ⟺
-`here_s ≥ AUTONOMY_PRESENT_MIN_S`** (named constant, default 60s) accrued while the ladder was
-ripe — i.e. the human was demonstrably at the chat for at least a beat and still did not answer.
-Otherwise it is **absent-silence** (the ladder climbed essentially unseen). One named constant,
-one comparison — still pure arithmetic.
+> **v1 scope note (post-audit, 2026-07-08):** the `0.80 ≤ confidence < 0.95` +
+> silence-while-**present** `proceed` branch is **DEFERRED**. The audit found the present-silence
+> predicate unsound as wired to `accrue`: `here_s` is credited in ~10-min chunks from ask-time
+> (not only while ripe) and counts *any* foreground app, so a blip at ask-time could later read
+> as "seen and ignored" — risking auto-proceed on a reversible action the human never saw. v1
+> therefore proceeds on reversible actions only at `≥ 0.95`. Present-silence returns as a
+> fast-follow once accrual is ripeness-gated (a dedicated "present-while-ripe" counter,
+> `"here"`-only, `≥ N` cycles). **This does not touch the chase policy** — busy-but-present
+> high-urgency chasing stays.
 
 The terminal rung's message always states the **specific** `default_action`, not the generic
-contract. On the agent's next session, the SessionStart block surfaces: what fired, which clock
-governed, and the `autonomy_decision` verdict — the agent then executes or reconsiders through
-its own 95% gate.
+contract. On the agent's next session, the SessionStart block surfaces: what fired and the
+`autonomy_decision` verdict — the agent then executes or reconsiders through its own 95% gate.
 
-**Risk: MEDIUM — safety-critical.** Hard tests: irreversible + any silence → never `proceed`;
-reversible below 0.80 → never `proceed`; the function is pure and total.
+**Risk: MEDIUM — safety-critical.** Hard tests: irreversible + any input → never `proceed`;
+reversible below 0.95 → never `proceed`; the function is pure and total.
 
 ## Slice ③ — Agent-authored rung messages
 
@@ -169,7 +169,10 @@ Each committed separately on `feat/decision-policy`, all 184 existing tests stay
 ## Confirmed decisions
 
 1. Confidence = numeric `0..1` + separate `--irreversible` flag. ✅
-2. Silent consent = **reversible-only**; irreversible always needs explicit yes. ✅
+2. Silent consent = **reversible-only**; irreversible always needs explicit yes. ✅ —
+   and, per the post-audit scope note above, the *present-silence* half is **deferred**: v1
+   reversible auto-proceed is `≥ 0.95` only. Present-silence returns once accrual is
+   ripeness-gated.
 3. Chase = high-urgency **and** low-confidence chase hardest; high-urgency-but-confident chases
    less. ✅ — but realized *simply*: **chase intensity is set by the urgency tier alone** (the ①
    table); **confidence governs only the autonomy outcome** (②). The "confident → chases less"
@@ -178,8 +181,7 @@ Each committed separately on `feat/decision-policy`, all 184 existing tests stay
    deferred (YAGNI) — it can be added later without restructuring.
 4. SwiftBar reflects changes immediately via push-on-change refresh. ✅ (slice ④)
 
-## One open tunable (surfaced to the audit, not blocking)
+## One open tunable
 
-The reversible auto-proceed bars — `0.95` unattended / `0.80` present — are my best-judgment
-defaults. They are single named constants and trivially retunable. The audit should sanity-check
-them; Yousef can tighten later without code restructuring.
+The reversible auto-proceed bar — `AUTONOMY_PROCEED_MIN = 0.95` — is a single named constant,
+trivially retunable without code restructuring. Yousef can tighten it later.
