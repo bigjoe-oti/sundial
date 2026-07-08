@@ -765,6 +765,26 @@ class TestAbsenceClock(unittest.TestCase):
         finally:
             watcher._spawn, core.DATA = orig_spawn, orig_data
 
+    def test_pending_ping_uses_stored_rungs(self):
+        c, now = self._c(60)
+        c["rungs"] = ["my rung one", "my rung two", "my final"]
+        hit = watcher.pending_ping(c, self._entry(unseen=600), now, "away", None)
+        self.assertEqual(hit[0], 1)
+        self.assertIn("my rung one", hit[1])
+
+    def test_stored_final_rung_appends_default_action(self):
+        c, now = self._c(60)
+        c["rungs"] = ["r1", "r2", "final call"]
+        c["default_action"] = "back up then halt"
+        hit = watcher.pending_ping(c, self._entry(unseen=3000), now, "away", None)
+        self.assertEqual(hit[0], 3)
+        self.assertIn("back up then halt", hit[1])
+
+    def test_no_rungs_falls_back_to_pool(self):
+        c, now = self._c(60)
+        hit = watcher.pending_ping(c, self._entry(unseen=600), now, "away", None)
+        self.assertNotIn("my rung one", hit[1])
+
     def test_accrue_by_state(self):
         c, now = self._c(30)
         for state, unseen, here in (("away", 600.0, 0.0),
