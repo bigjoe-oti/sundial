@@ -701,6 +701,35 @@ class TestAbsenceClock(unittest.TestCase):
                 watcher.ripe_rung(c, self._entry(unseen=unseen), now, "away"),
                 expected, f"normal unseen={unseen}")
 
+    def test_high_tier_message_states_no_false_minutes(self):
+        c, now = self._c(30); c["weight"] = "high"
+        hit = watcher.pending_ping(c, self._entry(unseen=1200), now, "away", None)
+        self.assertEqual(hit[0], 3)
+        self.assertNotIn("50 min", hit[1])       # normal-pool lie must not appear
+        self.assertNotIn("20m", hit[1])
+        self.assertIn("standing down", hit[1])    # terminal contract present
+
+    def test_low_terminal_rung_states_contract(self):
+        c, now = self._c(60); c["weight"] = "low"
+        hit = watcher.pending_ping(c, self._entry(unseen=5400), now, "away", None)
+        self.assertEqual(hit[0], 2)               # low max rung
+        self.assertIn("standing down", hit[1])    # contract on the LAST rung
+
+    def test_terminal_rung_states_specific_default_action(self):
+        c, now = self._c(60); c["weight"] = "high"
+        c["default_action"] = "back up then halt"
+        hit = watcher.pending_ping(c, self._entry(unseen=1200), now, "away", None)
+        self.assertIn("back up then halt", hit[1])
+
+    def test_normal_tier_copy_unchanged(self):
+        c, now = self._c(60)                      # normal, no default_action
+        hit = watcher.pending_ping(c, self._entry(unseen=3000), now, "away", None)
+        self.assertEqual(hit[0], 3)
+        # normal tier still routes through the existing numbered rung-3 pool;
+        # assert on the autonomy-consequence set (pick_message picks by id hash)
+        self.assertTrue(any(k in hit[1] for k in (
+            "proceeding on my judgment", "park it", "my call now", "deciding without you")))
+
     def test_accrue_by_state(self):
         c, now = self._c(30)
         for state, unseen, here in (("away", 600.0, 0.0),

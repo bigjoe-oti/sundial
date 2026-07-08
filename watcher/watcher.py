@@ -114,6 +114,20 @@ RETURN_POOL = (
     "You were gone {away_m} minutes. The question aged well: {text}",
 )
 
+# Tier-neutral fallback copy for NON-normal tiers: no baked-in elapsed minutes
+# (the normal pools hardcode 20m/50m, which would lie at other cadences). Rung 3
+# always states the autonomy consequence.
+TIER_RUNG_POOLS = {
+    1: ("{owner} — I'm blocked on: {text}",
+        "A question ripened while you were away: {text}"),
+    2: ("Still waiting, {owner}: {text}",
+        "Second knock: {text}"),
+    3: ("Final call, {owner}: {text} — proceeding on my judgment or standing down.",
+        "Last knock, {owner}: {text} — I move on my judgment now, or standing down."),
+}
+# NOTE: pick_message selects by int(id,16) % len(pool); both rung-3 entries must
+# carry the "standing down" contract so the terminal tests hold whichever is picked.
+
 
 MAX_NOTIFICATION_LEN = 300
 MAX_TEXT_FIELD_LEN = 200
@@ -353,19 +367,46 @@ def ripe_rung(c: dict, entry: dict, now, state) -> int:
 
 
 def pending_ping(c: dict, entry: dict, now, state, app) -> "tuple[int, str] | None":
-    """The single highest ripe, not-yet-sent rung for a commitment, or None."""
+    """The single highest ripe, not-yet-sent rung for a commitment, or None.
+    Message priority: agent-authored rungs > plain pool > terminal-with-default
+    > normal pools (unchanged) > tier-neutral high/low pools. Every terminal
+    rung carries the autonomy contract; no message states a false elapsed time."""
     if c.get("status") != "open" or core.parse_iso(c.get("due_at")) is None:
         return None
     ripe = ripe_rung(c, entry, now, state)
     if ripe <= entry.get("count", 0):
         return None
     text, cid = c.get("text", ""), c.get("id", "")
+    tier = policy.tier_of(c)
+    is_terminal = (ripe == policy.TIER_TABLE[tier]["rungs"])
+    da = c.get("default_action")
+
+    # 1) agent-authored voice wins (populated in slice ③; absent → skip)
+    stored = c.get("rungs")
+    if isinstance(stored, list) and len(stored) >= ripe and stored[ripe - 1]:
+        msg = str(stored[ripe - 1])
+        if is_terminal and da:
+            msg = f"{msg} — proceeding to {da} or standing down."
+        return ripe, _cap_message(msg)
+
+    # 2) plain (non-awaiting) unchanged
     if c.get("kind") != "awaiting-reply":
         return ripe, pick_message(cid, PLAIN_POOL, text=text)
-    if state == "elsewhere" and app:
-        pool = ELSEWHERE_POOLS[ripe - 1]
-        return ripe, pick_message(cid, pool, text=text, app=app)
-    return ripe, pick_message(cid, RUNG_POOLS[ripe - 1], text=text)
+
+    # 3) terminal rung WITH a stated default: honest, specific, tier-neutral
+    if is_terminal and da:
+        return ripe, _cap_message(
+            f"Final call, {owner_name()} — {text}: proceeding to {da}, or standing down.")
+
+    # 4) NORMAL tier: existing numbered / app-aware pools (behavior unchanged)
+    if tier == "normal":
+        if state == "elsewhere" and app:
+            return ripe, pick_message(cid, ELSEWHERE_POOLS[ripe - 1], text=text, app=app)
+        return ripe, pick_message(cid, RUNG_POOLS[ripe - 1], text=text)
+
+    # 5) HIGH / LOW: number-free copy; terminal rung carries the contract
+    pool = TIER_RUNG_POOLS[3 if is_terminal else ripe]
+    return ripe, pick_message(cid, pool, text=text)
 
 
 NOTIFIER_APP = Path(__file__).resolve().parent / "Sundial.app"
