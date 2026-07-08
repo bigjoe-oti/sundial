@@ -501,14 +501,19 @@ def chime(kind, state, audible=True) -> None:
         pass
 
 
-def speak_final(message: str, audible=True) -> None:
-    """Opt-in spoken final rung: only when data/speak.txt exists.
-    `audible=False` mutes unconditionally, same courtesy gate as chime()."""
+def speak_final(message: str, audible=True, force=False) -> None:
+    """Spoken final rung. Speaks when `force` (high-urgency tier) OR
+    data/speak.txt exists. `audible=False` mutes unconditionally — the same
+    courtesy gate as chime(); force never overrides silence-courtesy."""
     if not audible:
         return
+    voice, has_speak = "", False
     try:
         voice = (core.DATA / "speak.txt").read_text(encoding="utf-8").strip()
+        has_speak = True
     except Exception:
+        has_speak = False
+    if not force and not has_speak:
         return
     try:
         cmd = (["/usr/bin/say", "-v", voice, message] if voice
@@ -712,7 +717,8 @@ def run_cycle(force: bool = False) -> None:
                 desktop_notify("Sundial", message)
                 chime(rung, state, audible)
                 if rung == 3:
-                    speak_final(message, audible)
+                    speak_final(message, audible,
+                                force=(policy.tier_of(c) == "high"))
                 entry["count"], entry["last"] = rung, fire_now.isoformat()
                 entry["deferred_s"], entry["defer_reason"] = deferred_s, reason
                 notified[c["id"]] = entry

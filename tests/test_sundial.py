@@ -730,6 +730,23 @@ class TestAbsenceClock(unittest.TestCase):
         self.assertTrue(any(k in hit[1] for k in (
             "proceeding on my judgment", "park it", "my call now", "deciding without you")))
 
+    def test_high_tier_speaks_final_without_speak_txt(self):
+        spoken = []
+        orig_spawn, orig_data = watcher._spawn, core.DATA
+        watcher._spawn = lambda cmd: spoken.append(cmd)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                core.DATA = Path(d)   # isolate: guarantees no data/speak.txt
+                watcher.speak_final("final", audible=True, force=False)
+                self.assertEqual(spoken, [])                   # no speak.txt → silent
+                watcher.speak_final("final", audible=True, force=True)
+                self.assertTrue(any("/usr/bin/say" in c for c in spoken))
+                spoken.clear()
+                watcher.speak_final("final", audible=False, force=True)
+                self.assertEqual(spoken, [])                   # courtesy still wins
+        finally:
+            watcher._spawn, core.DATA = orig_spawn, orig_data
+
     def test_accrue_by_state(self):
         c, now = self._c(30)
         for state, unseen, here in (("away", 600.0, 0.0),
