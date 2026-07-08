@@ -633,6 +633,7 @@ def run_cycle(force: bool = False) -> None:
     snap = sample_presence()
     state, app = snap["state"], snap["front_app"]
     prev = record_presence(snap, now)
+    state_changed = (prev.get("state") != snap["state"])
     audible = sound_allowed(snap["state"], {"state": snap["state"],
         "since": (prev.get("since") if prev.get("state") == snap["state"]
                   else now.isoformat())}, now)
@@ -685,6 +686,7 @@ def run_cycle(force: bool = False) -> None:
                     entry["count"], entry["last"] = ripe, now.isoformat()
                     notified[c["id"]] = entry
                     dirty = True
+                    state_changed = True
                     opportunities.log_habit({
                         "kind": "fire", "rung": "return", "state": snap["state"],
                         "defer_reason": "none", "deferred_s": 0.0,
@@ -723,6 +725,7 @@ def run_cycle(force: bool = False) -> None:
                 entry["deferred_s"], entry["defer_reason"] = deferred_s, reason
                 notified[c["id"]] = entry
                 dirty = True
+                state_changed = True
                 opportunities.log_habit({
                     "kind": "fire", "rung": rung, "state": state,
                     "defer_reason": reason, "deferred_s": deferred_s,
@@ -812,6 +815,7 @@ def run_cycle(force: bool = False) -> None:
                 desktop_notify("Sundial", msg)
                 chime("return", state, audible)
                 opportunities.count_offer(today)
+                state_changed = True
             if rec:
                 habit = {"kind": "offer", "opp": kind, "app": evt.get("app")}
                 if stale:
@@ -841,6 +845,7 @@ def run_cycle(force: bool = False) -> None:
                 desktop_notify("Sundial", msg)
                 chime("return", state, audible)
                 opportunities.count_offer(today)
+                state_changed = True
             if rec:
                 opportunities.log_habit({"kind": "offer",
                                          "opp": "build-finished", "cmd": cmd})
@@ -868,6 +873,8 @@ def run_cycle(force: bool = False) -> None:
         dirty = True
     if dirty:
         core.write_json(NOTIFIED, notified)
+    if state_changed or dirty:
+        core.refresh_menubar()
 
 
 def main() -> None:

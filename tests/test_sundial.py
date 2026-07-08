@@ -41,6 +41,17 @@ import session_start  # noqa: E402
 import presence  # noqa: E402  (watcher dir already on sys.path)
 
 
+_ORIG_MENUBAR_SPAWN = core._menubar_spawn
+
+
+def setUpModule():
+    core._menubar_spawn = lambda cmd: None
+
+
+def tearDownModule():
+    core._menubar_spawn = _ORIG_MENUBAR_SPAWN
+
+
 class TestTz(unittest.TestCase):
     def test_quiet_non_wrapping(self):
         self.assertTrue(tzutil.in_quiet_hours(10, 9, 18))
@@ -784,6 +795,37 @@ class TestAbsenceClock(unittest.TestCase):
         c, now = self._c(60)
         hit = watcher.pending_ping(c, self._entry(unseen=600), now, "away", None)
         self.assertNotIn("my rung one", hit[1])
+
+    def test_run_cycle_refreshes_menubar_on_fire(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                    watcher.sample_presence, watcher.desktop_notify,
+                    watcher.wait_for_breakpoint, watcher.sample_assertions_raw,
+                    watcher.sample_net, watcher.sample_recent_fs,
+                    watcher.sample_builds, core._menubar_spawn)
+            core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
+            watcher.NOTIFIED = dd / "notified.json"
+            refreshed = []
+            core._menubar_spawn = lambda cmd: refreshed.append(cmd)
+            watcher.desktop_notify = lambda t, m: True
+            watcher.sample_presence = lambda: {"state": "away", "idle_s": 9999.0,
+                                               "front_app": None}
+            watcher.wait_for_breakpoint = lambda *a, **k: ("bound", 0.0)
+            watcher.sample_assertions_raw = lambda: ""
+            watcher.sample_net = lambda: None
+            watcher.sample_recent_fs = lambda: []
+            watcher.sample_builds = lambda: {}
+            try:
+                core.add_commitment("q?", "+0m", kind="awaiting-reply")
+                watcher.run_cycle(force=True)
+                self.assertTrue(refreshed)
+            finally:
+                (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                 watcher.sample_presence, watcher.desktop_notify,
+                 watcher.wait_for_breakpoint, watcher.sample_assertions_raw,
+                 watcher.sample_net, watcher.sample_recent_fs,
+                 watcher.sample_builds, core._menubar_spawn) = orig
 
     def test_accrue_by_state(self):
         c, now = self._c(30)
