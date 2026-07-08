@@ -121,6 +121,15 @@ class TestCore(unittest.TestCase):
         (core.DATA, core.COMMITMENTS, core.LEDGER, core.BIRTH, core.WEIGHTS) = self._orig
         self.tmp.cleanup()
 
+    def test_add_commitment_stores_weight(self):
+        rec = core.add_commitment("q?", "+0m", kind="awaiting-reply", weight="high")
+        self.assertEqual(rec["weight"], "high")
+        self.assertNotIn("weight",
+                         core.add_commitment("q2?", "+0m", kind="awaiting-reply",
+                                             weight="normal"))
+        self.assertNotIn("weight",
+                         core.add_commitment("q3?", "+0m", kind="awaiting-reply"))
+
     # --- birth ---
     def test_birth_written_once(self):
         b1 = core.get_or_create_birth()

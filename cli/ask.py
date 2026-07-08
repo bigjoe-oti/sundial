@@ -16,14 +16,18 @@ def main():
                     help="+NNm/+NNh, YYYY-MM-DD, or ISO datetime (default +10m)")
     ap.add_argument("--source", default="agent-blocked", help="where it came from")
     ap.add_argument("--session", default=None, help="asking session id (informational)")
+    ap.add_argument("--weight", choices=("low", "normal", "high"),
+                    default="normal", help="urgency tier (default normal)")
     args = ap.parse_args()
 
     rec = core.add_commitment(args.text, args.due, args.source,
-                              kind="awaiting-reply", session_id=args.session)
+                              kind="awaiting-reply", session_id=args.session,
+                              weight=args.weight)
     due = core.parse_iso(rec["due_at"])
     when = (due.astimezone(core.tzinfo()).strftime("%d %b %Y %H:%M")
             if due else "no due date")
-    print(f"armed [{rec['id']}] {rec['text']}  (rung 1 due: {when})")
+    tier = rec.get("weight", "normal")
+    print(f"armed [{rec['id']}] ({tier}) {rec['text']}  (rung 1 due: {when})")
 
 
 if __name__ == "__main__":

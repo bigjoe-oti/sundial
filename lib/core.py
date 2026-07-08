@@ -239,7 +239,8 @@ def parse_due(due_str: str | None):
 
 
 def add_commitment(text: str, due_str: str | None = None, source: str = "manual",
-                   kind: str = "plain", session_id: str | None = None) -> dict:
+                   kind: str = "plain", session_id: str | None = None,
+                   weight: str | None = None) -> dict:
     with _ledger_lock():
         items = load_commitments()
         due = parse_due(due_str)
@@ -255,6 +256,8 @@ def add_commitment(text: str, due_str: str | None = None, source: str = "manual"
             rec["kind"] = kind
         if session_id:
             rec["session_id"] = session_id
+        if weight and weight != "normal":
+            rec["weight"] = weight
         items.append(rec)
         write_json(COMMITMENTS, items)
         return rec
