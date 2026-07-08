@@ -130,6 +130,17 @@ class TestCore(unittest.TestCase):
         self.assertNotIn("weight",
                          core.add_commitment("q3?", "+0m", kind="awaiting-reply"))
 
+    def test_add_commitment_stores_policy_fields(self):
+        rec = core.add_commitment("drop col?", "+0m", kind="awaiting-reply",
+                                  confidence=0.9, irreversible=True,
+                                  default_action="back up then halt")
+        self.assertEqual(rec["confidence"], 0.9)
+        self.assertTrue(rec["irreversible"])
+        self.assertEqual(rec["default_action"], "back up then halt")
+        bare = core.add_commitment("q?", "+0m", kind="awaiting-reply")
+        for k in ("confidence", "irreversible", "default_action"):
+            self.assertNotIn(k, bare)
+
     # --- birth ---
     def test_birth_written_once(self):
         b1 = core.get_or_create_birth()

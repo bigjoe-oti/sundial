@@ -240,7 +240,9 @@ def parse_due(due_str: str | None):
 
 def add_commitment(text: str, due_str: str | None = None, source: str = "manual",
                    kind: str = "plain", session_id: str | None = None,
-                   weight: str | None = None) -> dict:
+                   weight: str | None = None, confidence: float | None = None,
+                   irreversible: bool = False,
+                   default_action: str | None = None) -> dict:
     with _ledger_lock():
         items = load_commitments()
         due = parse_due(due_str)
@@ -258,6 +260,12 @@ def add_commitment(text: str, due_str: str | None = None, source: str = "manual"
             rec["session_id"] = session_id
         if weight and weight != "normal":
             rec["weight"] = weight
+        if confidence is not None:
+            rec["confidence"] = confidence
+        if irreversible:
+            rec["irreversible"] = True
+        if default_action:
+            rec["default_action"] = default_action
         items.append(rec)
         write_json(COMMITMENTS, items)
         return rec
