@@ -1666,6 +1666,18 @@ class TestPromptSubmitHook(unittest.TestCase):
                          if c.get("kind") == "awaiting-reply" and c["status"] == "open"]
         self.assertEqual(open_awaiting, [])
 
+    def test_disarm_refreshes_menubar(self):
+        refreshed = []
+        orig = core._menubar_spawn
+        core._menubar_spawn = lambda cmd: refreshed.append(cmd)
+        try:
+            core.add_commitment("q?", "+0m", kind="awaiting-reply")
+            prompt_submit.build_context(core, {"prompt": "hello",
+                                               "transcript_path": None})
+            self.assertTrue(refreshed)
+        finally:
+            core._menubar_spawn = orig
+
     def test_answered_habit_logged_with_latency(self):
         core.add_commitment("q?", "+10m", kind="awaiting-reply")
         prompt_submit.build_context(core)

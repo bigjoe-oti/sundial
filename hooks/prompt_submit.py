@@ -105,6 +105,8 @@ def welcome_back_block(core, transcript_path) -> str:
 
 def build_context(core, data=None) -> str:
     closed = core.close_awaiting_detailed()
+    if closed:
+        core.refresh_menubar()
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "watcher"))
         import opportunities

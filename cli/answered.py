@@ -22,6 +22,7 @@ def main():
         raise
     if not args.quiet:
         print(f"closed {n} awaiting-reply item(s).")
+    core.refresh_menubar()
 
 
 if __name__ == "__main__":

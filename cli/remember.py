@@ -22,6 +22,7 @@ def main():
     when = (due.astimezone(core.tzinfo()).strftime("%d %b %Y %H:%M")
             if due else "no due date")
     print(f"recorded [{rec['id']}] {rec['text']}  (due: {when})")
+    core.refresh_menubar()
 
 
 if __name__ == "__main__":

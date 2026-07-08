@@ -44,6 +44,7 @@ def main():
             if due else "no due date")
     tier = rec.get("weight", "normal")
     print(f"armed [{rec['id']}] ({tier}) {rec['text']}  (rung 1 due: {when})")
+    core.refresh_menubar()
 
 
 if __name__ == "__main__":
