@@ -22,3 +22,32 @@ def tier_of(commitment: dict) -> str:
     weight degrades to normal — never raises, never a surprise tier."""
     w = (commitment or {}).get("weight")
     return w if w in TIER_TABLE else DEFAULT_TIER
+
+
+AUTONOMY_PROCEED_MIN = 0.95   # reversible actions proceed unattended at/above this
+
+
+def autonomy_decision(commitment: dict, entry: dict | None = None) -> dict:
+    """Pure, total gate. Given a commitment (confidence/irreversible), decide
+    what the agent may do once the ladder is exhausted and the human still
+    hasn't answered.
+
+    v1 rule (present-silence deferred — see spec):
+      - irreversible            -> require_explicit_yes (no silence ever authorizes)
+      - reversible, conf ≥ 0.95 -> proceed
+      - otherwise               -> stand_down
+
+    Never raises; any malformed input degrades to the safest outcome."""
+    commitment = commitment or {}
+    if commitment.get("irreversible"):
+        return {"action": "require_explicit_yes",
+                "reason": "irreversible: no silence ever authorizes it"}
+    try:
+        conf = float(commitment.get("confidence"))
+    except (TypeError, ValueError):
+        return {"action": "stand_down", "reason": "no usable confidence stated"}
+    if conf >= AUTONOMY_PROCEED_MIN:
+        return {"action": "proceed",
+                "reason": f"confidence {conf:.2f} ≥ {AUTONOMY_PROCEED_MIN}"}
+    return {"action": "stand_down",
+            "reason": f"confidence {conf:.2f} below {AUTONOMY_PROCEED_MIN}"}

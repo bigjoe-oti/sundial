@@ -3005,5 +3005,29 @@ class TestPolicyTiers(unittest.TestCase):
                              policy.TIER_TABLE[t]["rungs"])
 
 
+class TestAutonomyGate(unittest.TestCase):
+    def test_irreversible_never_proceeds(self):
+        d = policy.autonomy_decision({"irreversible": True, "confidence": 0.99})
+        self.assertEqual(d["action"], "require_explicit_yes")
+
+    def test_high_confidence_reversible_proceeds(self):
+        self.assertEqual(policy.autonomy_decision({"confidence": 0.95})["action"], "proceed")
+        self.assertEqual(policy.autonomy_decision({"confidence": 0.99})["action"], "proceed")
+
+    def test_below_bar_stands_down(self):
+        for conf in (0.0, 0.5, 0.8, 0.9499):
+            self.assertEqual(policy.autonomy_decision({"confidence": conf})["action"],
+                             "stand_down", f"conf={conf}")
+
+    def test_no_or_garbage_confidence_stands_down(self):
+        for c in ({}, {"confidence": None}, {"confidence": "high"}):
+            self.assertEqual(policy.autonomy_decision(c)["action"], "stand_down")
+
+    def test_total_never_raises(self):
+        for c in (None, {"irreversible": "yes"}, {"confidence": 1.0}):
+            self.assertIn(policy.autonomy_decision(c)["action"],
+                          ("require_explicit_yes", "proceed", "stand_down"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
