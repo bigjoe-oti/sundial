@@ -241,7 +241,10 @@ and pass `weight=args.weight` into the `add_commitment(...)` call; change the pr
         c, now = self._c(60)                      # normal, no default_action
         hit = watcher.pending_ping(c, self._entry(unseen=3000), now, "away", None)
         self.assertEqual(hit[0], 3)
-        self.assertIn("proceeding on my judgment", hit[1])  # existing rung-3 pool
+        # normal tier still routes through the existing numbered rung-3 pool;
+        # assert on the autonomy-consequence set (pick_message picks by id hash)
+        self.assertTrue(any(k in hit[1] for k in (
+            "proceeding on my judgment", "park it", "my call now", "deciding without you")))
 ```
 
 - [ ] **Step 2: Run FAIL** — high tier routes through numbered `RUNG_POOLS`.
@@ -258,8 +261,10 @@ TIER_RUNG_POOLS = {
     2: ("Still waiting, {owner}: {text}",
         "Second knock: {text}"),
     3: ("Final call, {owner}: {text} — proceeding on my judgment or standing down.",
-        "Last knock, {owner}: {text} — I take it from here or stand down."),
+        "Last knock, {owner}: {text} — I move on my judgment now, or standing down."),
 }
+# NOTE: pick_message selects by int(id,16) % len(pool); both rung-3 entries must
+# carry the "standing down" contract so the terminal tests hold whichever is picked.
 ```
 
 Replace `pending_ping` entirely:
@@ -321,18 +326,20 @@ def pending_ping(c: dict, entry: dict, now, state, app) -> "tuple[int, str] | No
 ```python
     def test_high_tier_speaks_final_without_speak_txt(self):
         spoken = []
-        orig = watcher._spawn
+        orig_spawn, orig_data = watcher._spawn, core.DATA
         watcher._spawn = lambda cmd: spoken.append(cmd)
         try:
-            watcher.speak_final("final", audible=True, force=False)
-            self.assertEqual(spoken, [])                       # no speak.txt → silent
-            watcher.speak_final("final", audible=True, force=True)
-            self.assertTrue(any("/usr/bin/say" in c for c in spoken))
-            spoken.clear()
-            watcher.speak_final("final", audible=False, force=True)
-            self.assertEqual(spoken, [])                       # courtesy still wins
+            with tempfile.TemporaryDirectory() as d:
+                core.DATA = Path(d)   # isolate: guarantees no data/speak.txt
+                watcher.speak_final("final", audible=True, force=False)
+                self.assertEqual(spoken, [])                   # no speak.txt → silent
+                watcher.speak_final("final", audible=True, force=True)
+                self.assertTrue(any("/usr/bin/say" in c for c in spoken))
+                spoken.clear()
+                watcher.speak_final("final", audible=False, force=True)
+                self.assertEqual(spoken, [])                   # courtesy still wins
         finally:
-            watcher._spawn = orig
+            watcher._spawn, core.DATA = orig_spawn, orig_data
 ```
 
 - [ ] **Step 2: Run FAIL** — unexpected keyword `force`.
@@ -711,14 +718,19 @@ def refresh_menubar() -> None:
 
 **Files:** Modify `watcher/watcher.py` (`run_cycle`), and `TestAbsenceClock.setUp`/`tearDown` to stub `core._menubar_spawn`; Test: `TestAbsenceClock`.
 
-- [ ] **Step 1: Failing test** — first, in `TestAbsenceClock.setUp`, add (so the existing ~15 run_cycle tests never fire a real `open`):
+- [ ] **Step 1: Failing test** — first, add a MODULE-LEVEL stub near the top of `tests/test_sundial.py` (after the imports) so NO test in the file ever fires a real `open` (multiple classes drive `run_cycle`: `TestAbsenceClock`, `TestWatcherLadder`, `TestDeferredDelivery`, `TestCourtesy`, `TestOpportunityCycle`). This runs under both `pytest` and `python3 tests/test_sundial.py`:
 
 ```python
-        self._orig_menubar = core._menubar_spawn
-        core._menubar_spawn = lambda cmd: None
+_ORIG_MENUBAR_SPAWN = core._menubar_spawn
+
+def setUpModule():
+    core._menubar_spawn = lambda cmd: None
+
+def tearDownModule():
+    core._menubar_spawn = _ORIG_MENUBAR_SPAWN
 ```
 
-and in `tearDown`: `core._menubar_spawn = self._orig_menubar`. Then add the test:
+(Tests that OBSERVE the refresh — Task 12's and Task 13's below — capture the current seam as `orig`, set their own capturing lambda, assert, and restore to `orig`; the module stub is their harmless baseline.) Then add the test:
 
 ```python
     def test_run_cycle_refreshes_menubar_on_fire(self):
