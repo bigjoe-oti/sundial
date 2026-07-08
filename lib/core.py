@@ -242,7 +242,8 @@ def add_commitment(text: str, due_str: str | None = None, source: str = "manual"
                    kind: str = "plain", session_id: str | None = None,
                    weight: str | None = None, confidence: float | None = None,
                    irreversible: bool = False,
-                   default_action: str | None = None) -> dict:
+                   default_action: str | None = None,
+                   rungs: list | None = None) -> dict:
     with _ledger_lock():
         items = load_commitments()
         due = parse_due(due_str)
@@ -266,6 +267,8 @@ def add_commitment(text: str, due_str: str | None = None, source: str = "manual"
             rec["irreversible"] = True
         if default_action:
             rec["default_action"] = default_action
+        if rungs:
+            rec["rungs"] = [str(r) for r in rungs][:3]
         items.append(rec)
         write_json(COMMITMENTS, items)
         return rec

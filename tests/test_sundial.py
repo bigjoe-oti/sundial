@@ -141,6 +141,13 @@ class TestCore(unittest.TestCase):
         for k in ("confidence", "irreversible", "default_action"):
             self.assertNotIn(k, bare)
 
+    def test_add_commitment_stores_rungs(self):
+        rec = core.add_commitment("q?", "+0m", kind="awaiting-reply",
+                                  rungs=["knock one", "knock two", "final call"])
+        self.assertEqual(rec["rungs"], ["knock one", "knock two", "final call"])
+        self.assertNotIn("rungs",
+                         core.add_commitment("q2?", "+0m", kind="awaiting-reply"))
+
     # --- birth ---
     def test_birth_written_once(self):
         b1 = core.get_or_create_birth()

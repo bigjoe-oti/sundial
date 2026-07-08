@@ -24,16 +24,21 @@ def main():
                     help="destructive/one-way; never auto-proceeds on silence")
     ap.add_argument("--default", dest="default_action", default=None,
                     help="action taken if you never answer (stated in the final rung)")
+    ap.add_argument("--rung", action="append", dest="rungs", default=None,
+                    help="pre-composed message for a rung (repeat ≤3, in order)")
     args = ap.parse_args()
 
     if args.confidence is not None and not (0.0 <= args.confidence <= 1.0):
         ap.error("--confidence must be between 0 and 1")
+    if args.rungs and len(args.rungs) > 3:
+        ap.error("at most 3 --rung messages")
 
     rec = core.add_commitment(args.text, args.due, args.source,
                               kind="awaiting-reply", session_id=args.session,
                               weight=args.weight, confidence=args.confidence,
                               irreversible=args.irreversible,
-                              default_action=args.default_action)
+                              default_action=args.default_action,
+                              rungs=args.rungs)
     due = core.parse_iso(rec["due_at"])
     when = (due.astimezone(core.tzinfo()).strftime("%d %b %Y %H:%M")
             if due else "no due date")
