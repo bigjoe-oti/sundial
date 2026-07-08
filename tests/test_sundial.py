@@ -731,7 +731,8 @@ class TestAbsenceClock(unittest.TestCase):
                 expected, f"normal unseen={unseen}")
 
     def test_high_tier_message_states_no_false_minutes(self):
-        c, now = self._c(30); c["weight"] = "high"
+        c, now = self._c(30)
+        c["weight"] = "high"
         hit = watcher.pending_ping(c, self._entry(unseen=1200), now, "away", None)
         self.assertEqual(hit[0], 3)
         self.assertNotIn("50 min", hit[1])       # normal-pool lie must not appear
@@ -739,13 +740,15 @@ class TestAbsenceClock(unittest.TestCase):
         self.assertIn("standing down", hit[1])    # terminal contract present
 
     def test_low_terminal_rung_states_contract(self):
-        c, now = self._c(60); c["weight"] = "low"
+        c, now = self._c(60)
+        c["weight"] = "low"
         hit = watcher.pending_ping(c, self._entry(unseen=5400), now, "away", None)
         self.assertEqual(hit[0], 2)               # low max rung
         self.assertIn("standing down", hit[1])    # contract on the LAST rung
 
     def test_terminal_rung_states_specific_default_action(self):
-        c, now = self._c(60); c["weight"] = "high"
+        c, now = self._c(60)
+        c["weight"] = "high"
         c["default_action"] = "back up then halt"
         hit = watcher.pending_ping(c, self._entry(unseen=1200), now, "away", None)
         self.assertIn("back up then halt", hit[1])
