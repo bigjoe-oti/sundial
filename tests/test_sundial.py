@@ -1891,10 +1891,33 @@ class TestSessionStartHook(unittest.TestCase):
         self.assertNotIn("z" * 201, line)      # rest truncated away
         self.assertLess(len(line), 260)        # tag + 200 + ellipsis, bounded
 
-    def test_two_clock_block_flags_running_long(self):
-        rec = core.add_commitment("slow task", "+2h", est_str="1m")
+    def test_two_clock_flags_at_risk_when_deadline_tighter_than_p90(self):
+        # due in 1 minute, P90 2h (n=0 floor on a 1h est): remaining < P90
+        rec = core.add_commitment("tight task", "+1m", est_str="1h")
         self.assertIn("est", rec)
-        # force elapsed > p90 (n=0 floor: 1m * 2 = 120s): backdate creation
+        birth = core.get_or_create_birth()
+        block = session_start.build_block(core, birth, None)
+        self.assertIn("at risk", block)
+        self.assertIn("Estimation:", block)
+        self.assertIn("no closed samples", block)
+
+    def test_two_clock_future_due_never_reds_on_elapsed(self):
+        # The soak repro: a 1m-effort task due in 2h. Elapsed since creation
+        # blows past P90 (120s) but the deadline is comfortably far -- wall
+        # time since promising is NOT time spent working. No flag.
+        core.add_commitment("scheduled check", "+2h", est_str="1m")
+        items = core.load_commitments()
+        items[0]["created_at"] = (
+            core.now_utc() - timedelta(hours=1)).isoformat()
+        core.write_json(core.COMMITMENTS, items)
+        birth = core.get_or_create_birth()
+        block = session_start.build_block(core, birth, None)
+        self.assertNotIn("at risk", block)
+        self.assertNotIn("running long", block)
+
+    def test_two_clock_no_due_running_long_on_elapsed(self):
+        # Without a deadline, elapsed-vs-P90 is the only meaningful clock.
+        core.add_commitment("open-ended task", est_str="1m")
         items = core.load_commitments()
         items[0]["created_at"] = (
             core.now_utc() - timedelta(hours=1)).isoformat()
@@ -1902,8 +1925,6 @@ class TestSessionStartHook(unittest.TestCase):
         birth = core.get_or_create_birth()
         block = session_start.build_block(core, birth, None)
         self.assertIn("running long", block)
-        self.assertIn("Estimation:", block)
-        self.assertIn("no closed samples", block)
 
     def test_two_clock_health_line_with_samples(self):
         import estimator

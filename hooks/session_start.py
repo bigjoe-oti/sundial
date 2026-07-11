@@ -81,6 +81,17 @@ def build_block(core, birth, previous):
             created = core.parse_iso(c.get("created_at"))
             if p90 is None or created is None:
                 continue
+            due = core.parse_iso(c.get("due_at"))
+            if due is not None:
+                # Deadline-carrying: red means "start now or your own P90
+                # says you miss" -- never wall-time-since-promising.
+                remaining = (due - now2).total_seconds()
+                if remaining < p90:
+                    long_lines.append(
+                        f"  - at risk: {str(c.get('text', ''))[:80]} "
+                        f"(due in {core.humanize_delta(max(remaining, 0))}, "
+                        f"needs P90 {core.humanize_delta(p90)})")
+                continue
             elapsed = (now2 - created).total_seconds()
             if elapsed > p90:
                 long_lines.append(
