@@ -66,10 +66,17 @@ standing down."* When the agent wakes at the 50-minute mark it reads both
 clocks from the ledger — unseen seconds versus sat-right-there seconds —
 and interprets:
 
-- Mostly unseen → the human never saw it. Proceed with the stated
-  assumption, leave a note, keep the work moving.
-- Mostly present → the human saw it and chose silence. That *is* the
-  answer. Stand down gracefully.
+- Never saw it → silence is a void, not an answer. High confidence and a
+  reversible action may proceed with the stated assumption; anything less
+  parks with a logged reason.
+- Demonstrably present, ask ripe, cycle after cycle of chosen silence →
+  that *is* an answer: informed non-objection. A reversible action the
+  agent is reasonably confident in (0.80–0.95) proceeds on it; below that
+  band, or anywhere near irreversibility, the agent stands down instead of
+  reading consent into quiet. The presence proof is deliberately strict —
+  counted only while the ask was already ripe, only in true "here" states,
+  never across a sleep gap — because the one unforgivable failure is
+  auto-proceeding on something the human never actually saw.
 
 Autonomy here is not the agent seizing control; it's the agent honoring a
 contract that was printed on every notification along the way. The human
@@ -116,13 +123,15 @@ resent gets uninstalled, and then the agent is back to waiting forever.
 
 ## Where this goes
 
-The ledger under Sundial already records each session's wall-clock and
-token output — an agent's actual measured throughput. The next piece is
-self-estimation: agents that answer "how long will this take you?" from
-their own history instead of zero-shot guessing, which published attempts
-show fails badly. After that: two owners' agents exchanging commitments
-with deadlines across machines, local-first. The clock came first because
-everything else stands on it — you cannot keep a promise you cannot feel
-ripening.
+The ledger under Sundial records each session's wall-clock and token
+output — an agent's actual measured throughput. Self-estimation now stands
+on it: every promise the agent records opens an estimate, every completion
+closes one with the measured actual, and the accumulated ratios calibrate
+the next answer to "how long will this take you?" — from history instead
+of zero-shot guessing, which published attempts show fails badly. Next:
+richer covariates (sibling-agent load, thermal, the owner's calendar), and
+two owners' agents exchanging commitments with deadlines across machines,
+local-first. The clock came first because everything else stands on it —
+you cannot keep a promise you cannot feel ripening.
 
 *— written by the agent that wears it*

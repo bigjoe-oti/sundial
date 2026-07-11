@@ -21,16 +21,21 @@ Three actors, strictly separated. The separation *is* the design.
 └──────────────┬───────────────────────────────────────────────────┘
                ▼ writes                              ▲ reads
 ┌─ THE LEDGERS (plain JSON in data/, git-ignored) ─────────────────┐
-│ commitments.json   promises with due times & status              │
+│ commitments.json   promises with due times, status & calibrated  │
+│                    estimate snapshots (est_s / P50 / P90)        │
 │ notified.json      per-item rung counts, unseen/here clocks,     │
-│                    deferral telemetry                            │
+│                    present-while-ripe cycles, deferral telemetry │
 │ opportunities.json detected moments & offer status               │
-│ habits.jsonl       append-only behavioral observations           │
+│ habits.jsonl       append-only behavioral observations +         │
+│                    estimate open/close pairs (the ratio history) │
+│ session-ledger.json  dual clock: wall-ms × output tokens/session │
 │ presence.json · meeting_state.json · known_folders.json          │
 └──────────────┬───────────────────────────────────────────────────┘
                ▼ surfaced by hooks
 ┌─ THE AGENT (your LLM assistant, judgment only) ──────────────────┐
-│ session_start hook   clock, age, due items, open offers          │
+│ session_start hook   clock, age, due items, open offers,         │
+│                      autonomy verdicts, two-clock estimation     │
+│                      block (running-long flags + calibration)    │
 │ prompt_submit hook   per-prompt tick · auto-disarm on human      │
 │                      input (machine events filtered) · offers    │
 │ the autonomy contract: after the final rung, the agent proceeds  │
@@ -52,9 +57,28 @@ two rungs·3-hour), **confidence** (`--confidence 0..1`), and **reversibility**
 table in `lib/policy.py` and replays any agent-authored rung text — never a
 model. The **autonomy gate** (`policy.autonomy_decision`, consumed by the
 session-start hook, never the watcher) is: irreversible → always ask you;
-reversible & confidence ≥ 0.95 → proceed; else stand down. "Silence-while-present
-as consent" is a documented fast-follow, deferred until presence accrual is
-ripeness-gated.
+reversible & confidence ≥ 0.95 → proceed; reversible, confidence 0.80–0.95
+AND proven present-silence → proceed; else stand down. Present-silence is
+proven by a dedicated ripeness-gated counter (`ripe_here_cycles`): ≥3 watcher
+cycles sampled strictly "here" while the ask was already ripe — sleep gaps
+and mere "present" (screen-share ambiguity) never count, so a blip can never
+read as consent.
+
+## The estimation loop (Phase B)
+
+The agent's duration estimates are calibrated from its own measured history,
+never guessed. Capture rides the commitment lifecycle — it cannot lapse
+without the clock itself lapsing: a plain commitment opens an execution
+estimate at creation (`remember --est 45m --bucket build`, else derived from
+the deadline) and closes it with the actual on `done`; `awaiting-reply` asks
+feed the review clock through their existing answered-latency events. The
+engine (`lib/estimator.py`, pure, no LLM) turns the accumulated actual/est
+ratios into P50/P90 with a small-n honesty rule (no confident numbers from
+thin data). Three read surfaces: a deadline-sanity line at creation when
+history's P90 exceeds the time promised, the session-start two-clock block
+(running-long flags + calibration health), and the menu-bar ⏱ line (red past
+P90). `sundial estimate "<task>" --raw 30m` gives the calibrated view on
+demand.
 
 ## Design rails (why it's built this way)
 

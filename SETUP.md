@@ -109,6 +109,23 @@ Drop these in `data/` any time; the watcher reads them fresh each cycle
 - `speak.txt` — voice name (or empty) to speak the final rung aloud (same as
   `--speak` above)
 
+## Timezone
+
+Sundial displays times and parses date-only deadlines in `SUNDIAL_TZ`
+(IANA name, e.g. `Africa/Cairo`) and silently falls back to **UTC** when it
+is unset. The variable must reach every entry point separately — none of
+them inherit your shell profile:
+
+- **Claude hooks:** prefix both commands in `~/.claude/settings.json`, e.g.
+  `SUNDIAL_TZ=Africa/Cairo python3 …/hooks/session_start.py`
+- **The watcher:** add an `EnvironmentVariables` dict with `SUNDIAL_TZ` to
+  the LaunchAgent plist, then `launchctl bootout` + `bootstrap` to reload.
+- **CLI from a terminal:** export it in your shell profile.
+
+The symptom of forgetting one: that surface shows UTC times while the
+others show local — deadlines set as bare dates (`--due 2026-07-14`) also
+resolve to end-of-day in the wrong zone.
+
 ## Optional: menu-bar face
 
 For an at-a-glance presence/asks/offers readout without opening a session,
