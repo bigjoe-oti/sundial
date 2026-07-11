@@ -100,6 +100,11 @@ Threshold `AUTONOMY_PROCEED_MIN = 0.95` is a single named constant.
 > fast-follow once accrual is ripeness-gated (a dedicated "present-while-ripe" counter,
 > `"here"`-only, `≥ N` cycles). **This does not touch the chase policy** — busy-but-present
 > high-urgency chasing stays.
+>
+> **Landed 2026-07-11:** the fast-follow shipped as designed — `ripe_here_cycles` accrues only
+> when the raw sample is `"here"` (never `"present"`), the sleep-guard passes, and the ask was
+> ripe *before* that cycle's accrual; `N = 3` (~30 min at 10-min cycles). Gate branch:
+> reversible, `0.80 ≤ conf < 0.95`, `ripe_here_cycles ≥ 3` → `proceed`.
 
 The terminal rung's message always states the **specific** `default_action`, not the generic
 contract. On the agent's next session, the SessionStart block surfaces: what fired and the

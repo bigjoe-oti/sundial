@@ -25,17 +25,34 @@ def tier_of(commitment: dict) -> str:
 
 
 AUTONOMY_PROCEED_MIN = 0.95   # reversible actions proceed unattended at/above this
+PRESENT_SILENCE_CONF_MIN = 0.80   # floor of the present-silence proceed band
+PRESENT_SILENCE_MIN_CYCLES = 3    # ripe-while-"here" cycles (~30 min at 10-min cycles)
+
+
+def _present_silence(entry) -> bool:
+    """True only when the entry proves informed silence: ≥ N watcher cycles
+    sampled strictly "here" while the ask was already ripe. Counted by
+    accrue(ripe=True) — never from raw here_s, whose ask-time chunking the
+    2026-07-08 audit found unsound (S1)."""
+    if not isinstance(entry, dict):
+        return False
+    cycles = entry.get("ripe_here_cycles")
+    if not isinstance(cycles, int) or isinstance(cycles, bool):
+        return False
+    return cycles >= PRESENT_SILENCE_MIN_CYCLES
 
 
 def autonomy_decision(commitment: dict, entry: dict | None = None) -> dict:
-    """Pure, total gate. Given a commitment (confidence/irreversible), decide
-    what the agent may do once the ladder is exhausted and the human still
-    hasn't answered.
+    """Pure, total gate. Given a commitment (confidence/irreversible) and its
+    notified entry, decide what the agent may do once the ladder is exhausted
+    and the human still hasn't answered.
 
-    v1 rule (present-silence deferred — see spec):
-      - irreversible            -> require_explicit_yes (no silence ever authorizes)
-      - reversible, conf ≥ 0.95 -> proceed
-      - otherwise               -> stand_down
+      - irreversible                      -> require_explicit_yes
+                                             (no silence ever authorizes)
+      - reversible, conf ≥ 0.95           -> proceed
+      - reversible, 0.80 ≤ conf < 0.95,
+        present-silence proven            -> proceed
+      - otherwise                         -> stand_down
 
     Never raises; any malformed input degrades to the safest outcome."""
     commitment = commitment or {}
@@ -49,5 +66,11 @@ def autonomy_decision(commitment: dict, entry: dict | None = None) -> dict:
     if conf >= AUTONOMY_PROCEED_MIN:
         return {"action": "proceed",
                 "reason": f"confidence {conf:.2f} ≥ {AUTONOMY_PROCEED_MIN}"}
+    if conf >= PRESENT_SILENCE_CONF_MIN and _present_silence(entry):
+        return {"action": "proceed",
+                "reason": (f"present-silence: seen ripe ≥"
+                           f"{PRESENT_SILENCE_MIN_CYCLES} cycles while here, "
+                           f"no objection; confidence {conf:.2f} ≥ "
+                           f"{PRESENT_SILENCE_CONF_MIN}")}
     return {"action": "stand_down",
             "reason": f"confidence {conf:.2f} below {AUTONOMY_PROCEED_MIN}"}
