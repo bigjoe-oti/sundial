@@ -3323,6 +3323,35 @@ class TestEstimateCapture(unittest.TestCase):
         # errors surface to the human
         self.assertAlmostEqual(rec["est"]["est_s"], 3600.0, delta=5.0)
 
+    def test_remember_est_flags_and_sanity(self):
+        self._tmp()
+        # seed history: chronic 2x overrun so P90 blows any tight deadline
+        import estimator
+        for i in range(6):
+            estimator.record_estimate(core.DATA, f"h{i}", 100, actual_s=200)
+        import contextlib
+        import importlib
+        import io
+        sys.path.insert(0, str(Path(core.__file__).resolve().parent.parent
+                               / "cli"))
+        import remember
+        importlib.reload(remember)
+        orig_refresh = core.refresh_menubar
+        core.refresh_menubar = lambda: None
+        buf = io.StringIO()
+        argv = sys.argv
+        sys.argv = ["remember", "tight promise", "--due", "+1h",
+                    "--est", "50m", "--bucket", "build"]
+        try:
+            with contextlib.redirect_stdout(buf):
+                remember.main()
+        finally:
+            sys.argv = argv
+            core.refresh_menubar = orig_refresh
+        out = buf.getvalue()
+        self.assertIn("recorded [", out)
+        self.assertIn("P90", out)   # 50m * 2.0 ratio = 100m > 60m deadline
+
 
 class TestAutonomyGate(unittest.TestCase):
     def test_irreversible_never_proceeds(self):
