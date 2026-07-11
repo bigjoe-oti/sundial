@@ -139,12 +139,26 @@ try:
         p90 = est.get("p90_s")
         def h(s):
             s = int(s)
+            if s >= 86400:
+                return f"{s//86400}d{(s%86400)//3600}h"
             return (f"{s//3600}h{(s%3600)//60:02d}m" if s >= 3600
                     else f"{s//60}m")
         text = str(c.get("text", "")).replace("|", "/")[:40]
-        if p90 is not None and elapsed > p90:
+        due_raw = c.get("due_at")
+        due = datetime.datetime.fromisoformat(due_raw) if due_raw else None
+        if p90 is None:
+            pass
+        elif due is not None:
+            # red = "start now or your own P90 says you miss the deadline"
+            remaining = (due - now).total_seconds()
+            if remaining < p90:
+                print(f"⏱ {text} — at risk: due in {h(max(remaining, 0))},"
+                      f" needs P90 {h(p90)} | color=red")
+            else:
+                print(f"⏱ {text} — P90 {h(p90)}, due in {h(remaining)}")
+        elif elapsed > p90:
             print(f"⏱ {text} — over P90 {h(p90)} | color=red")
-        elif p90 is not None:
+        else:
             print(f"⏱ {text} — P90 {h(p90)}, {h(elapsed)} in")
 except Exception:
     pass
