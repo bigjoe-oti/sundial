@@ -3323,6 +3323,43 @@ class TestEstimateCapture(unittest.TestCase):
         # errors surface to the human
         self.assertAlmostEqual(rec["est"]["est_s"], 3600.0, delta=5.0)
 
+    def test_done_records_actual_and_ratio(self):
+        d = self._tmp()
+        rec = core.add_commitment("ship x", "+2h", est_str="1h")
+        out = core.resolve_commitment(rec["id"], "done")
+        self.assertIsInstance(out, dict)
+        closes = [e for e in self._events(d) if e.get("actual_s") is not None]
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(closes[0]["cid"], rec["id"])
+        self.assertEqual(closes[0]["est_s"], 3600.0)
+        self.assertIsNotNone(closes[0]["ratio"])
+
+    def test_non_done_close_records_nothing(self):
+        d = self._tmp()
+        rec = core.add_commitment("ship x", "+2h", est_str="1h")
+        core.resolve_commitment(rec["id"], "declined")
+        self.assertEqual(
+            [e for e in self._events(d) if e.get("actual_s") is not None], [])
+
+    def test_double_done_records_once(self):
+        d = self._tmp()
+        rec = core.add_commitment("ship x", "+2h", est_str="1h")
+        core.resolve_commitment(rec["id"], "done")
+        core.resolve_commitment(rec["id"], "done")
+        self.assertEqual(
+            len([e for e in self._events(d)
+                 if e.get("actual_s") is not None]), 1)
+
+    def test_done_without_estimate_records_nothing(self):
+        d = self._tmp()
+        rec = core.add_commitment("someday z")
+        self.assertTrue(core.resolve_commitment(rec["id"], "done"))
+        self.assertEqual(self._events(d), [])
+
+    def test_resolve_missing_returns_none(self):
+        self._tmp()
+        self.assertIsNone(core.resolve_commitment("nope", "done"))
+
     def test_remember_est_flags_and_sanity(self):
         self._tmp()
         # seed history: chronic 2x overrun so P90 blows any tight deadline

@@ -302,17 +302,43 @@ def _attach_estimate(rec: dict, due, est_str, bucket) -> None:
         rec.pop("est", None)
 
 
-def resolve_commitment(commitment_id: str, status: str = "done") -> bool:
+def resolve_commitment(commitment_id: str, status: str = "done"):
+    """Set a commitment's status. Returns the resolved record (dict) or None
+    if no commitment matched -- truthiness-compatible with the old bool.
+    A done-close of a previously-open estimated commitment records the
+    actual on the execution clock; capture is fail-safe and never blocks."""
     with _ledger_lock():
         items = load_commitments()
-        hit = False
+        hit = None
+        was_open = False
         for c in items:
             if c.get("id") == commitment_id:
+                was_open = c.get("status") == "open"
                 c["status"] = status
-                hit = True
-        if hit:
+                hit = c
+        if hit is not None:
             write_json(COMMITMENTS, items)
-        return hit
+    if hit is not None and was_open and status == "done":
+        _close_estimate(hit)
+    return dict(hit) if hit is not None else None
+
+
+def _close_estimate(rec: dict) -> None:
+    """Append the closing estimate event (actual + ratio) for a done
+    commitment that opened one. Runs OUTSIDE the ledger lock (record_estimate
+    appends under O_APPEND and needs none). Fail-safe by contract."""
+    try:
+        snap = rec.get("est")
+        created = parse_iso(rec.get("created_at"))
+        if not isinstance(snap, dict) or created is None:
+            return
+        import estimator  # lazy: estimator imports core
+        actual = (now_utc() - created).total_seconds()
+        estimator.record_estimate(DATA, str(rec.get("text", ""))[:80],
+                                  snap.get("est_s"), actual_s=actual,
+                                  bucket=snap.get("bucket"), cid=rec.get("id"))
+    except Exception:
+        pass
 
 
 def close_awaiting_detailed(status: str = "answered") -> list:
