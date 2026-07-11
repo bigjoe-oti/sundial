@@ -1891,6 +1891,30 @@ class TestSessionStartHook(unittest.TestCase):
         self.assertNotIn("z" * 201, line)      # rest truncated away
         self.assertLess(len(line), 260)        # tag + 200 + ellipsis, bounded
 
+    def test_two_clock_block_flags_running_long(self):
+        rec = core.add_commitment("slow task", "+2h", est_str="1m")
+        self.assertIn("est", rec)
+        # force elapsed > p90 (n=0 floor: 1m * 2 = 120s): backdate creation
+        items = core.load_commitments()
+        items[0]["created_at"] = (
+            core.now_utc() - timedelta(hours=1)).isoformat()
+        core.write_json(core.COMMITMENTS, items)
+        birth = core.get_or_create_birth()
+        block = session_start.build_block(core, birth, None)
+        self.assertIn("running long", block)
+        self.assertIn("Estimation:", block)
+        self.assertIn("no closed samples", block)
+
+    def test_two_clock_health_line_with_samples(self):
+        import estimator
+        for i in range(6):
+            estimator.record_estimate(core.DATA, f"h{i}", 100, actual_s=110)
+        birth = core.get_or_create_birth()
+        block = session_start.build_block(core, birth, None)
+        self.assertIn("Estimation: 6 closed samples", block)
+        self.assertIn("1.1x", block)
+        self.assertNotIn("running long", block)
+
     def test_verdict_block_for_exhausted_ask(self):
         with tempfile.TemporaryDirectory() as d:
             dd = Path(d)
