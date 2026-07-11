@@ -210,12 +210,16 @@ screen. Three silent killers, all fixed in `setup.sh` as of v1.0.2 — see
 
 ## Roadmap
 
-- **v2 — self-estimation:** the ledger already records wall-ms × output
-  tokens per session. Next: agents that estimate task duration from their
-  own measured history instead of zero-shot guessing (which
-  [measurably fails](https://arxiv.org/abs/2604.22750)).
+- **v2 — self-estimation (shipped):** plain commitments carry calibrated
+  P50/P90 from the agent's own measured ratio history (`--est/--bucket` on
+  `remember`) instead of zero-shot guessing (which
+  [measurably fails](https://arxiv.org/abs/2604.22750)). Deadlines get a
+  sanity check at creation, sessions flag work running past its own P90,
+  and the menu bar shows the active promise's calibrated state.
 - Learned quiet hours from your actual rhythm; sibling-session awareness;
-  cross-machine commitments between two owners' agents.
+  cross-machine commitments between two owners' agents; estimation
+  covariates from the verified sensor survey
+  (docs/research/2026-07-11-macos-sensor-survey.md).
 - `sundial doctor` — one command verifying the whole delivery chain
   (daemon, applet identity, permission registration, mirroring setting).
 
