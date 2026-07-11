@@ -3268,6 +3268,62 @@ class TestMenubarSync(unittest.TestCase):
             core._menubar_spawn = orig
 
 
+class TestEstimateCapture(unittest.TestCase):
+    def _tmp(self):
+        d = tempfile.TemporaryDirectory()
+        self._orig = (core.DATA, core.COMMITMENTS)
+        core.DATA = Path(d.name)
+        core.COMMITMENTS = Path(d.name) / "commitments.json"
+        self.addCleanup(lambda: setattr(core, "DATA", self._orig[0]))
+        self.addCleanup(lambda: setattr(core, "COMMITMENTS", self._orig[1]))
+        self.addCleanup(d.cleanup)
+        return Path(d.name)
+
+    def _events(self, d):
+        p = d / "habits.jsonl"
+        if not p.exists():
+            return []
+        return [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+
+    def test_explicit_est_wins_and_opens_event(self):
+        d = self._tmp()
+        rec = core.add_commitment("ship x", "+2h", est_str="45m",
+                                  bucket="build")
+        self.assertEqual(rec["est"]["est_s"], 2700.0)
+        self.assertEqual(rec["est"]["bucket"], "build")
+        self.assertIn("p90_s", rec["est"])
+        ev = self._events(d)
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0]["cid"], rec["id"])
+        self.assertIsNone(ev[0]["actual_s"])
+
+    def test_due_derived_when_no_est(self):
+        d = self._tmp()
+        rec = core.add_commitment("ship y", "+1h")
+        self.assertAlmostEqual(rec["est"]["est_s"], 3600.0, delta=5.0)
+        self.assertEqual(len(self._events(d)), 1)
+
+    def test_no_est_no_due_no_capture(self):
+        d = self._tmp()
+        rec = core.add_commitment("someday z")
+        self.assertNotIn("est", rec)
+        self.assertEqual(self._events(d), [])
+
+    def test_awaiting_reply_never_opens_execution_estimate(self):
+        d = self._tmp()
+        rec = core.add_commitment("q?", "+10m", kind="awaiting-reply",
+                                  est_str="10m")
+        self.assertNotIn("est", rec)
+        self.assertEqual(self._events(d), [])
+
+    def test_bad_est_string_is_ignored_not_fatal(self):
+        self._tmp()
+        rec = core.add_commitment("ship w", "+1h", est_str="soonish")
+        # falls back to due-derived; the verb layer is where strict parse
+        # errors surface to the human
+        self.assertAlmostEqual(rec["est"]["est_s"], 3600.0, delta=5.0)
+
+
 class TestAutonomyGate(unittest.TestCase):
     def test_irreversible_never_proceeds(self):
         d = policy.autonomy_decision({"irreversible": True, "confidence": 0.99})
