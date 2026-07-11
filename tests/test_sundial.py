@@ -3058,6 +3058,47 @@ class TestEstimatorLedger(unittest.TestCase):
             out = estimator.estimate_execution(100.0, dd, bucket="build")
             self.assertEqual(out["bucket"], "build")
 
+    def test_record_estimate_carries_cid(self):
+        import estimator
+        with tempfile.TemporaryDirectory() as d:
+            estimator.record_estimate(d, "t", 60, actual_s=90, bucket="build",
+                                      cid="abc12345")
+            e = json.loads((Path(d) / "habits.jsonl").read_text().strip())
+            self.assertEqual(e["cid"], "abc12345")
+            self.assertEqual(e["bucket"], "build")
+
+    def test_sanity_line_warns_only_with_data_and_overrun(self):
+        import estimator
+        calib = {"p50_s": 700.0, "p90_s": 7200.0, "n": 6, "confidence": "high"}
+        line = estimator.sanity_line(3600.0, 5400.0, calib)
+        self.assertIsNotNone(line)
+        self.assertIn("P90", line)
+        # no data -> silent
+        none_calib = {"p50_s": None, "p90_s": None, "n": 0, "confidence": "none"}
+        self.assertIsNone(estimator.sanity_line(3600.0, 5400.0, none_calib))
+        # p90 fits inside the deadline -> silent
+        ok = {"p50_s": 700.0, "p90_s": 4000.0, "n": 6, "confidence": "high"}
+        self.assertIsNone(estimator.sanity_line(3600.0, 5400.0, ok))
+        # no deadline -> silent
+        self.assertIsNone(estimator.sanity_line(3600.0, None, calib))
+
+    def test_calibration_health_counts_both_clocks(self):
+        import estimator
+        with tempfile.TemporaryDirectory() as d:
+            estimator.record_estimate(d, "a", 100, actual_s=150)
+            estimator.record_estimate(d, "b", 100, actual_s=50)
+            estimator.record_estimate(d, "open", 100)          # open: excluded
+            with open(Path(d) / "habits.jsonl", "a") as f:
+                f.write(json.dumps({"kind": "answered",
+                                    "latency_s": 30.0}) + "\n")
+            h = estimator.calibration_health(d)
+            self.assertEqual(h["n_exec"], 2)
+            self.assertAlmostEqual(h["p50_ratio"], 1.0)
+            self.assertEqual(h["confidence"], "low")
+            self.assertEqual(h["n_review"], 1)
+            self.assertEqual(
+                estimator.calibration_health(Path(d) / "nope")["n_exec"], 0)
+
 
 class TestEstimatorAPI(unittest.TestCase):
     def _ledger(self, dd, ratios, latencies=()):
