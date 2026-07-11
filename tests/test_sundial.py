@@ -454,12 +454,21 @@ class TestWatcherLadder(unittest.TestCase):
     def test_migrate_entry(self):
         self.assertEqual(watcher.migrate_entry("2026-01-01T00:00:00+00:00"),
                          {"count": 1, "last": "2026-01-01T00:00:00+00:00",
-                          "unseen_s": 0.0, "here_s": 0.0, "last_cycle": None})
-        d = {"count": 2, "last": "x", "unseen_s": 5.0, "here_s": 1.0, "last_cycle": "t"}
+                          "unseen_s": 0.0, "here_s": 0.0, "last_cycle": None,
+                          "ripe_here_cycles": 0})
+        d = {"count": 2, "last": "x", "unseen_s": 5.0, "here_s": 1.0,
+             "last_cycle": "t", "ripe_here_cycles": 4}
         self.assertEqual(watcher.migrate_entry(d), d)
         self.assertEqual(watcher.migrate_entry(None),
                          {"count": 0, "last": None, "unseen_s": 0.0,
-                          "here_s": 0.0, "last_cycle": None})
+                          "here_s": 0.0, "last_cycle": None,
+                          "ripe_here_cycles": 0})
+
+    def test_migrate_entry_repairs_bad_ripe_here_cycles(self):
+        for bad in ("3", None, 2.5, [], True):
+            e = watcher.migrate_entry({"count": 1, "last": "x",
+                                       "ripe_here_cycles": bad})
+            self.assertEqual(e["ripe_here_cycles"], 0, f"bad={bad!r}")
 
     def test_rung_selection_by_elapsed(self):
         # Old RUNG_OFFSETS-based (wall-elapsed-since-due) ladder is now the
@@ -843,6 +852,38 @@ class TestAbsenceClock(unittest.TestCase):
             self.assertAlmostEqual(e["here_s"], here, delta=1.0, msg=state)
             self.assertEqual(e["last_cycle"], now.isoformat())
 
+    def test_accrue_ripe_here_credits_one_cycle(self):
+        c, now = self._c(30)
+        e = self._entry()
+        e["last_cycle"] = (now - timedelta(seconds=600)).isoformat()
+        watcher.accrue(e, "here", now, core.parse_iso(c["created_at"]),
+                       ripe=True)
+        self.assertEqual(e["ripe_here_cycles"], 1)
+
+    def test_accrue_ripe_credit_is_here_only(self):
+        # "present" (screen-sharing/how-busy ambiguity) never counts toward
+        # informed silence; neither do away/elsewhere. here without ripeness
+        # doesn't count either.
+        c, now = self._c(30)
+        for state, ripe in (("present", True), ("away", True),
+                            ("elsewhere", True), ("here", False)):
+            e = self._entry()
+            e["last_cycle"] = (now - timedelta(seconds=600)).isoformat()
+            watcher.accrue(e, state, now, core.parse_iso(c["created_at"]),
+                           ripe=ripe)
+            self.assertEqual(e.get("ripe_here_cycles", 0), 0,
+                             f"state={state} ripe={ripe}")
+
+    def test_accrue_sleep_gap_never_credits_ripe_here(self):
+        # A 6x-cycle gap means the machine slept: "here" at wake must not
+        # retroactively read as present-while-ripe.
+        c, now = self._c(60)
+        e = self._entry()
+        e["last_cycle"] = (now - timedelta(seconds=3600)).isoformat()
+        watcher.accrue(e, "here", now, core.parse_iso(c["created_at"]),
+                       ripe=True)
+        self.assertEqual(e.get("ripe_here_cycles", 0), 0)
+
     def test_accrue_sleep_gap_counts_away(self):
         c, now = self._c(60)
         e = self._entry()
@@ -927,6 +968,50 @@ class TestAbsenceClock(unittest.TestCase):
                 saved = core.read_json(watcher.NOTIFIED, {})
                 self.assertIn(rec["id"], saved)      # ...but accrual persisted
                 self.assertIn("here_s", saved[rec["id"]])
+            finally:
+                (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                 watcher.sample_presence, watcher.desktop_notify,
+                 watcher.wait_for_breakpoint, watcher.sample_assertions_raw,
+                 watcher.sample_net, watcher.sample_recent_fs,
+                 watcher.sample_builds) = orig
+
+    def test_run_cycle_credits_ripe_here_cycles(self):
+        # HERE with a ripe ask: the held cycle still counts toward informed
+        # silence. A brand-new (unripe) ask must NOT be credited by the same
+        # cycle — ripeness is judged on the clocks BEFORE this cycle's accrual.
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                    watcher.sample_presence, watcher.desktop_notify,
+                    watcher.wait_for_breakpoint, watcher.sample_assertions_raw,
+                    watcher.sample_net, watcher.sample_recent_fs,
+                    watcher.sample_builds)
+            core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
+            watcher.NOTIFIED = dd / "notified.json"
+            watcher.desktop_notify = lambda t, m: True
+            watcher.sample_presence = lambda: {"state": "here",
+                                               "idle_s": 1.0,
+                                               "front_app": "Terminal"}
+            watcher.wait_for_breakpoint = lambda *a, **k: ("bound", 0.0)
+            watcher.sample_assertions_raw = lambda: ""
+            watcher.sample_net = lambda: None
+            watcher.sample_recent_fs = lambda: []
+            watcher.sample_builds = lambda: {}
+            try:
+                now = core.now_utc()
+                ripe_c = core.add_commitment("ripe?", "+0m",
+                                             kind="awaiting-reply")
+                fresh_c = core.add_commitment("fresh?", "+0m",
+                                              kind="awaiting-reply")
+                core.write_json(watcher.NOTIFIED, {ripe_c["id"]: {
+                    "count": 1, "last": now.isoformat(),
+                    "unseen_s": 600.0, "here_s": 0.0,
+                    "last_cycle": (now - timedelta(seconds=600)).isoformat()}})
+                watcher.run_cycle(force=True)
+                saved = core.read_json(watcher.NOTIFIED, {})
+                self.assertEqual(saved[ripe_c["id"]]["ripe_here_cycles"], 1)
+                self.assertEqual(
+                    saved[fresh_c["id"]].get("ripe_here_cycles", 0), 0)
             finally:
                 (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
                  watcher.sample_presence, watcher.desktop_notify,
@@ -3164,6 +3249,44 @@ class TestAutonomyGate(unittest.TestCase):
         for c in (None, {"irreversible": "yes"}, {"confidence": 1.0}):
             self.assertIn(policy.autonomy_decision(c)["action"],
                           ("require_explicit_yes", "proceed", "stand_down"))
+
+    def test_present_silence_proceeds_in_band(self):
+        for conf in (0.80, 0.90, 0.9499):
+            d = policy.autonomy_decision(
+                {"confidence": conf}, {"ripe_here_cycles": 3})
+            self.assertEqual(d["action"], "proceed", f"conf={conf}")
+            self.assertIn("present-silence", d["reason"])
+
+    def test_present_silence_never_touches_irreversible(self):
+        d = policy.autonomy_decision(
+            {"irreversible": True, "confidence": 0.99},
+            {"ripe_here_cycles": 100})
+        self.assertEqual(d["action"], "require_explicit_yes")
+
+    def test_present_silence_needs_enough_cycles(self):
+        for cycles in (0, 1, 2):
+            d = policy.autonomy_decision(
+                {"confidence": 0.90}, {"ripe_here_cycles": cycles})
+            self.assertEqual(d["action"], "stand_down", f"cycles={cycles}")
+
+    def test_present_silence_never_below_band(self):
+        d = policy.autonomy_decision(
+            {"confidence": 0.79}, {"ripe_here_cycles": 100})
+        self.assertEqual(d["action"], "stand_down")
+
+    def test_present_silence_garbage_entry_stands_down(self):
+        for entry in (None, {}, {"ripe_here_cycles": None},
+                      {"ripe_here_cycles": "9"}, {"ripe_here_cycles": True},
+                      {"ripe_here_cycles": 3.0}, "not-a-dict"):
+            d = policy.autonomy_decision({"confidence": 0.90}, entry)
+            self.assertEqual(d["action"], "stand_down", f"entry={entry!r}")
+
+    def test_high_confidence_needs_no_presence(self):
+        # ≥ 0.95 proceeds exactly as before, entry or not.
+        for entry in (None, {"ripe_here_cycles": 0}):
+            self.assertEqual(
+                policy.autonomy_decision({"confidence": 0.95}, entry)["action"],
+                "proceed")
 
 
 if __name__ == "__main__":

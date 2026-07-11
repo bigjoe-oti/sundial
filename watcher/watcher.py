@@ -180,6 +180,9 @@ def migrate_entry(value) -> dict:
     for k in ("unseen_s", "here_s"):
         if not isinstance(e.get(k), (int, float)):
             e[k] = 0.0
+    rhc = e.get("ripe_here_cycles")
+    if not isinstance(rhc, int) or isinstance(rhc, bool):
+        e["ripe_here_cycles"] = 0
     e.setdefault("last_cycle", None)
     return e
 
@@ -303,10 +306,15 @@ def sound_allowed(state, prev_presence: dict, now) -> bool:
     return True
 
 
-def accrue(entry: dict, state, now, created) -> None:
+def accrue(entry: dict, state, now, created, ripe: bool = False) -> None:
     """Advance an item's unseen/here clocks by the gap since last cycle.
     A gap far beyond the cycle interval means the machine slept: sleep
-    counts as away. HERE and PRESENT pause the unseen clock."""
+    counts as away. HERE and PRESENT pause the unseen clock.
+
+    ripe=True additionally credits ripe_here_cycles when the state is
+    strictly "here" — the present-while-ripe counter behind the autonomy
+    gate's present-silence branch. "present" is excluded (screen-share /
+    how-busy ambiguity), and a sleep gap can never credit it."""
     prev = core.parse_iso(entry.get("last_cycle")) or created
     gap = max(0.0, (now - prev).total_seconds())
     eff = "away" if gap > 2 * CYCLE_S else state
@@ -316,6 +324,8 @@ def accrue(entry: dict, state, now, created) -> None:
         entry["unseen_s"] = entry.get("unseen_s", 0.0) + gap * ELSEWHERE_WEIGHT
     elif eff in ("here", "present"):
         entry["here_s"] = entry.get("here_s", 0.0) + gap
+        if ripe and eff == "here":
+            entry["ripe_here_cycles"] = entry.get("ripe_here_cycles", 0) + 1
     # state None: no accrual — legacy plain-due-date path handles ripeness
     entry["last_cycle"] = now.isoformat()
 
@@ -673,7 +683,11 @@ def run_cycle(force: bool = False) -> None:
             if state is not None and c.get("kind") == "awaiting-reply":
                 created = (core.parse_iso(c.get("created_at"))
                            or core.parse_iso(c.get("due_at")) or now)
-                accrue(entry, state, now, created)
+                # Ripeness judged BEFORE this cycle's accrual advances the
+                # clocks: a cycle only counts toward informed silence if the
+                # ask was already ripe when the human was sampled "here".
+                was_ripe = ripe_rung(c, entry, now, state) >= 1
+                accrue(entry, state, now, created, ripe=was_ripe)
                 notified[c["id"]] = entry
                 dirty = True
             if returned and c.get("kind") == "awaiting-reply":
