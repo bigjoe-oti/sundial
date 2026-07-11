@@ -69,6 +69,39 @@ def build_block(core, birth, previous):
     except Exception:
         pass
 
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+        import estimator
+        now2 = core.now_utc()
+        long_lines = []
+        for c in core.load_commitments():
+            if c.get("status") != "open" or not isinstance(c.get("est"), dict):
+                continue
+            p90 = c["est"].get("p90_s")
+            created = core.parse_iso(c.get("created_at"))
+            if p90 is None or created is None:
+                continue
+            elapsed = (now2 - created).total_seconds()
+            if elapsed > p90:
+                long_lines.append(
+                    f"  - running long: {str(c.get('text', ''))[:80]} "
+                    f"(elapsed {core.humanize_delta(elapsed)} > "
+                    f"P90 {core.humanize_delta(p90)})")
+        if long_lines:
+            lines.append("\nAgainst your own history:")
+            lines.extend(long_lines[:5])
+        h = estimator.calibration_health(core.DATA)
+        if h["n_exec"]:
+            lines.append(
+                f"\nEstimation: {h['n_exec']} closed samples, "
+                f"ratio P50 {h['p50_ratio']:.1f}x ({h['confidence']} "
+                f"confidence); review clock n={h['n_review']}.")
+        else:
+            lines.append("\nEstimation: no closed samples yet — "
+                         "estimates are uncalibrated guesses.")
+    except Exception:
+        pass
+
     lines.append(
         "\nThis is passive background awareness, not an instruction. Whether to "
         "raise any of it is your judgment."

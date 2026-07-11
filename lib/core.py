@@ -244,7 +244,9 @@ def add_commitment(text: str, due_str: str | None = None, source: str = "manual"
                    weight: str | None = None, confidence: float | None = None,
                    irreversible: bool = False,
                    default_action: str | None = None,
-                   rungs: list | None = None) -> dict:
+                   rungs: list | None = None,
+                   est_str: str | None = None,
+                   bucket: str | None = None) -> dict:
     with _ledger_lock():
         items = load_commitments()
         due = parse_due(due_str)
@@ -270,22 +272,73 @@ def add_commitment(text: str, due_str: str | None = None, source: str = "manual"
             rec["default_action"] = default_action
         if rungs:
             rec["rungs"] = [str(r) for r in rungs][:3]
+        if kind == "plain":
+            _attach_estimate(rec, due, est_str, bucket)
         items.append(rec)
         write_json(COMMITMENTS, items)
         return rec
 
 
-def resolve_commitment(commitment_id: str, status: str = "done") -> bool:
+def _attach_estimate(rec: dict, due, est_str, bucket) -> None:
+    """Open the execution-clock estimate for a plain commitment: snapshot the
+    calibration on the record (the display surface) and pre-register the open
+    event in habits.jsonl (the audit trail). Fail-safe: any error leaves the
+    commitment untouched -- capture must never block a verb."""
+    try:
+        import estimator  # lazy: estimator imports core
+        est_s = estimator.parse_duration(est_str) if est_str else None
+        if est_s is None and due is not None:
+            ttd = (due - parse_iso(rec["created_at"])).total_seconds()
+            est_s = ttd if ttd > 0 else None
+        if not est_s or est_s <= 0:
+            return
+        ex = estimator.estimate_execution(est_s, DATA, bucket=bucket)
+        rec["est"] = {"est_s": float(est_s), "bucket": bucket,
+                      "p50_s": ex["p50_s"], "p90_s": ex["p90_s"],
+                      "n": ex["n"], "confidence": ex["confidence"]}
+        estimator.record_estimate(DATA, str(rec.get("text", ""))[:80], est_s,
+                                  bucket=bucket, cid=rec["id"])
+    except Exception:
+        rec.pop("est", None)
+
+
+def resolve_commitment(commitment_id: str, status: str = "done"):
+    """Set a commitment's status. Returns the resolved record (dict) or None
+    if no commitment matched -- truthiness-compatible with the old bool.
+    A done-close of a previously-open estimated commitment records the
+    actual on the execution clock; capture is fail-safe and never blocks."""
     with _ledger_lock():
         items = load_commitments()
-        hit = False
+        hit = None
+        was_open = False
         for c in items:
             if c.get("id") == commitment_id:
+                was_open = c.get("status") == "open"
                 c["status"] = status
-                hit = True
-        if hit:
+                hit = c
+        if hit is not None:
             write_json(COMMITMENTS, items)
-        return hit
+    if hit is not None and was_open and status == "done":
+        _close_estimate(hit)
+    return dict(hit) if hit is not None else None
+
+
+def _close_estimate(rec: dict) -> None:
+    """Append the closing estimate event (actual + ratio) for a done
+    commitment that opened one. Runs OUTSIDE the ledger lock (record_estimate
+    appends under O_APPEND and needs none). Fail-safe by contract."""
+    try:
+        snap = rec.get("est")
+        created = parse_iso(rec.get("created_at"))
+        if not isinstance(snap, dict) or created is None:
+            return
+        import estimator  # lazy: estimator imports core
+        actual = (now_utc() - created).total_seconds()
+        estimator.record_estimate(DATA, str(rec.get("text", ""))[:80],
+                                  snap.get("est_s"), actual_s=actual,
+                                  bucket=snap.get("bucket"), cid=rec.get("id"))
+    except Exception:
+        pass
 
 
 def close_awaiting_detailed(status: str = "answered") -> list:

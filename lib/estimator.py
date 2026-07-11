@@ -148,7 +148,36 @@ def estimate_timeline(raw_s, data_dir, bucket=None):
             "end_to_end_p90_s": ex["p90_s"] + add90}
 
 
-def record_estimate(data_dir, task, est_s, actual_s=None, bucket=None):
+def sanity_line(est_s, ttd_s, calib):
+    """Deadline-sanity warning, or None. Speaks ONLY when history exists
+    (n > 0) and its calibrated P90 exceeds the time available before the
+    deadline. Pure: no IO, no clock."""
+    if not isinstance(calib, dict) or not calib.get("n"):
+        return None
+    p90 = calib.get("p90_s")
+    if p90 is None or ttd_s is None or p90 <= ttd_s:
+        return None
+    return (f"⚠ history: P90 ~{core.humanize_delta(p90)} "
+            f"(n={calib['n']}, {calib.get('confidence', '?')} confidence) — "
+            f"deadline leaves {core.humanize_delta(ttd_s)}; "
+            f"pad it or tighten scope.")
+
+
+def calibration_health(data_dir):
+    """One-glance loop health for the surfaces: closed execution samples,
+    their median ratio, and review-clock sample count. Never raises."""
+    events = _read_habits(data_dir)
+    ratios, _ = _estimate_ratios(events)
+    reviews = _answered_latencies(events)
+    p50 = percentile(sorted(ratios), 0.50) if ratios else None
+    n = len(ratios)
+    conf = "none" if n == 0 else ("low" if n < MIN_CONFIDENT_N else "high")
+    return {"n_exec": n, "p50_ratio": p50, "confidence": conf,
+            "n_review": len(reviews)}
+
+
+def record_estimate(data_dir, task, est_s, actual_s=None, bucket=None,
+                    cid=None):
     """Append an estimate event to habits.jsonl. ratio computed when actual_s
     is given; actual_s=None pre-registers an open estimate (log est BEFORE the
     work, close it after -- keeps the loop honest). A single small append is
@@ -164,6 +193,8 @@ def record_estimate(data_dir, task, est_s, actual_s=None, bucket=None):
                "actual_s": act, "ratio": ratio, "ts": core.now_utc().isoformat()}
         if bucket:
             rec["bucket"] = str(bucket)
+        if cid:
+            rec["cid"] = str(cid)
         p = Path(data_dir)
         p.mkdir(parents=True, exist_ok=True)   # never silently drop on fresh env
         with open(p / "habits.jsonl", "a", encoding="utf-8") as f:

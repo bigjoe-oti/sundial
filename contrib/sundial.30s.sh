@@ -117,9 +117,45 @@ print("\n".join(out))
 ' 2>/dev/null
 }
 
+estimate_line() {
+    python3 -c '
+import json, datetime
+try:
+    with open("'"$DATA_DIR"'/commitments.json") as f:
+        items = json.load(f)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    best = None
+    for c in items:
+        est = c.get("est")
+        if c.get("status") != "open" or not isinstance(est, dict):
+            continue
+        key = c.get("due_at") or "9999"
+        if best is None or key < best[0]:
+            best = (key, c, est)
+    if best is not None:
+        _, c, est = best
+        created = datetime.datetime.fromisoformat(c["created_at"])
+        elapsed = (now - created).total_seconds()
+        p90 = est.get("p90_s")
+        def h(s):
+            s = int(s)
+            return (f"{s//3600}h{(s%3600)//60:02d}m" if s >= 3600
+                    else f"{s//60}m")
+        text = str(c.get("text", "")).replace("|", "/")[:40]
+        if p90 is not None and elapsed > p90:
+            print(f"⏱ {text} — over P90 {h(p90)} | color=red")
+        elif p90 is not None:
+            print(f"⏱ {text} — P90 {h(p90)}, {h(elapsed)} in")
+except Exception:
+    pass
+' 2>/dev/null
+}
+
 echo "---"
 echo "Presence: ${PRESENCE_WORD}"
 echo "---"
 detail_lines
+EST_LINE="$(estimate_line)"
+[ -n "$EST_LINE" ] && echo "$EST_LINE"
 echo "---"
 echo "Open Sundial folder | bash=open param1=${PROJECT_DIR} terminal=false"

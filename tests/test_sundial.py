@@ -1891,6 +1891,30 @@ class TestSessionStartHook(unittest.TestCase):
         self.assertNotIn("z" * 201, line)      # rest truncated away
         self.assertLess(len(line), 260)        # tag + 200 + ellipsis, bounded
 
+    def test_two_clock_block_flags_running_long(self):
+        rec = core.add_commitment("slow task", "+2h", est_str="1m")
+        self.assertIn("est", rec)
+        # force elapsed > p90 (n=0 floor: 1m * 2 = 120s): backdate creation
+        items = core.load_commitments()
+        items[0]["created_at"] = (
+            core.now_utc() - timedelta(hours=1)).isoformat()
+        core.write_json(core.COMMITMENTS, items)
+        birth = core.get_or_create_birth()
+        block = session_start.build_block(core, birth, None)
+        self.assertIn("running long", block)
+        self.assertIn("Estimation:", block)
+        self.assertIn("no closed samples", block)
+
+    def test_two_clock_health_line_with_samples(self):
+        import estimator
+        for i in range(6):
+            estimator.record_estimate(core.DATA, f"h{i}", 100, actual_s=110)
+        birth = core.get_or_create_birth()
+        block = session_start.build_block(core, birth, None)
+        self.assertIn("Estimation: 6 closed samples", block)
+        self.assertIn("1.1x", block)
+        self.assertNotIn("running long", block)
+
     def test_verdict_block_for_exhausted_ask(self):
         with tempfile.TemporaryDirectory() as d:
             dd = Path(d)
@@ -3058,6 +3082,47 @@ class TestEstimatorLedger(unittest.TestCase):
             out = estimator.estimate_execution(100.0, dd, bucket="build")
             self.assertEqual(out["bucket"], "build")
 
+    def test_record_estimate_carries_cid(self):
+        import estimator
+        with tempfile.TemporaryDirectory() as d:
+            estimator.record_estimate(d, "t", 60, actual_s=90, bucket="build",
+                                      cid="abc12345")
+            e = json.loads((Path(d) / "habits.jsonl").read_text().strip())
+            self.assertEqual(e["cid"], "abc12345")
+            self.assertEqual(e["bucket"], "build")
+
+    def test_sanity_line_warns_only_with_data_and_overrun(self):
+        import estimator
+        calib = {"p50_s": 700.0, "p90_s": 7200.0, "n": 6, "confidence": "high"}
+        line = estimator.sanity_line(3600.0, 5400.0, calib)
+        self.assertIsNotNone(line)
+        self.assertIn("P90", line)
+        # no data -> silent
+        none_calib = {"p50_s": None, "p90_s": None, "n": 0, "confidence": "none"}
+        self.assertIsNone(estimator.sanity_line(3600.0, 5400.0, none_calib))
+        # p90 fits inside the deadline -> silent
+        ok = {"p50_s": 700.0, "p90_s": 4000.0, "n": 6, "confidence": "high"}
+        self.assertIsNone(estimator.sanity_line(3600.0, 5400.0, ok))
+        # no deadline -> silent
+        self.assertIsNone(estimator.sanity_line(3600.0, None, calib))
+
+    def test_calibration_health_counts_both_clocks(self):
+        import estimator
+        with tempfile.TemporaryDirectory() as d:
+            estimator.record_estimate(d, "a", 100, actual_s=150)
+            estimator.record_estimate(d, "b", 100, actual_s=50)
+            estimator.record_estimate(d, "open", 100)          # open: excluded
+            with open(Path(d) / "habits.jsonl", "a") as f:
+                f.write(json.dumps({"kind": "answered",
+                                    "latency_s": 30.0}) + "\n")
+            h = estimator.calibration_health(d)
+            self.assertEqual(h["n_exec"], 2)
+            self.assertAlmostEqual(h["p50_ratio"], 1.0)
+            self.assertEqual(h["confidence"], "low")
+            self.assertEqual(h["n_review"], 1)
+            self.assertEqual(
+                estimator.calibration_health(Path(d) / "nope")["n_exec"], 0)
+
 
 class TestEstimatorAPI(unittest.TestCase):
     def _ledger(self, dd, ratios, latencies=()):
@@ -3225,6 +3290,128 @@ class TestMenubarSync(unittest.TestCase):
             core.refresh_menubar()   # must swallow
         finally:
             core._menubar_spawn = orig
+
+
+class TestEstimateCapture(unittest.TestCase):
+    def _tmp(self):
+        d = tempfile.TemporaryDirectory()
+        self._orig = (core.DATA, core.COMMITMENTS)
+        core.DATA = Path(d.name)
+        core.COMMITMENTS = Path(d.name) / "commitments.json"
+        self.addCleanup(lambda: setattr(core, "DATA", self._orig[0]))
+        self.addCleanup(lambda: setattr(core, "COMMITMENTS", self._orig[1]))
+        self.addCleanup(d.cleanup)
+        return Path(d.name)
+
+    def _events(self, d):
+        p = d / "habits.jsonl"
+        if not p.exists():
+            return []
+        return [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+
+    def test_explicit_est_wins_and_opens_event(self):
+        d = self._tmp()
+        rec = core.add_commitment("ship x", "+2h", est_str="45m",
+                                  bucket="build")
+        self.assertEqual(rec["est"]["est_s"], 2700.0)
+        self.assertEqual(rec["est"]["bucket"], "build")
+        self.assertIn("p90_s", rec["est"])
+        ev = self._events(d)
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0]["cid"], rec["id"])
+        self.assertIsNone(ev[0]["actual_s"])
+
+    def test_due_derived_when_no_est(self):
+        d = self._tmp()
+        rec = core.add_commitment("ship y", "+1h")
+        self.assertAlmostEqual(rec["est"]["est_s"], 3600.0, delta=5.0)
+        self.assertEqual(len(self._events(d)), 1)
+
+    def test_no_est_no_due_no_capture(self):
+        d = self._tmp()
+        rec = core.add_commitment("someday z")
+        self.assertNotIn("est", rec)
+        self.assertEqual(self._events(d), [])
+
+    def test_awaiting_reply_never_opens_execution_estimate(self):
+        d = self._tmp()
+        rec = core.add_commitment("q?", "+10m", kind="awaiting-reply",
+                                  est_str="10m")
+        self.assertNotIn("est", rec)
+        self.assertEqual(self._events(d), [])
+
+    def test_bad_est_string_is_ignored_not_fatal(self):
+        self._tmp()
+        rec = core.add_commitment("ship w", "+1h", est_str="soonish")
+        # falls back to due-derived; the verb layer is where strict parse
+        # errors surface to the human
+        self.assertAlmostEqual(rec["est"]["est_s"], 3600.0, delta=5.0)
+
+    def test_done_records_actual_and_ratio(self):
+        d = self._tmp()
+        rec = core.add_commitment("ship x", "+2h", est_str="1h")
+        out = core.resolve_commitment(rec["id"], "done")
+        self.assertIsInstance(out, dict)
+        closes = [e for e in self._events(d) if e.get("actual_s") is not None]
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(closes[0]["cid"], rec["id"])
+        self.assertEqual(closes[0]["est_s"], 3600.0)
+        self.assertIsNotNone(closes[0]["ratio"])
+
+    def test_non_done_close_records_nothing(self):
+        d = self._tmp()
+        rec = core.add_commitment("ship x", "+2h", est_str="1h")
+        core.resolve_commitment(rec["id"], "declined")
+        self.assertEqual(
+            [e for e in self._events(d) if e.get("actual_s") is not None], [])
+
+    def test_double_done_records_once(self):
+        d = self._tmp()
+        rec = core.add_commitment("ship x", "+2h", est_str="1h")
+        core.resolve_commitment(rec["id"], "done")
+        core.resolve_commitment(rec["id"], "done")
+        self.assertEqual(
+            len([e for e in self._events(d)
+                 if e.get("actual_s") is not None]), 1)
+
+    def test_done_without_estimate_records_nothing(self):
+        d = self._tmp()
+        rec = core.add_commitment("someday z")
+        self.assertTrue(core.resolve_commitment(rec["id"], "done"))
+        self.assertEqual(self._events(d), [])
+
+    def test_resolve_missing_returns_none(self):
+        self._tmp()
+        self.assertIsNone(core.resolve_commitment("nope", "done"))
+
+    def test_remember_est_flags_and_sanity(self):
+        self._tmp()
+        # seed history: chronic 2x overrun so P90 blows any tight deadline
+        import estimator
+        for i in range(6):
+            estimator.record_estimate(core.DATA, f"h{i}", 100, actual_s=200)
+        import contextlib
+        import importlib
+        import io
+        sys.path.insert(0, str(Path(core.__file__).resolve().parent.parent
+                               / "cli"))
+        import remember
+        importlib.reload(remember)
+        orig_refresh = core.refresh_menubar
+        core.refresh_menubar = lambda: None
+        buf = io.StringIO()
+        argv = sys.argv
+        sys.argv = ["remember", "tight promise", "--due", "+1h",
+                    "--est", "50m", "--bucket", "build"]
+        try:
+            with contextlib.redirect_stdout(buf):
+                remember.main()
+        finally:
+            sys.argv = argv
+            core.refresh_menubar = orig_refresh
+        out = buf.getvalue()
+        self.assertIn("recorded [", out)
+        self.assertIn("P90", out)   # 50m * 2.0 ratio = 100m > 60m deadline
 
 
 class TestAutonomyGate(unittest.TestCase):
