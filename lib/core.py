@@ -334,9 +334,16 @@ def _close_estimate(rec: dict) -> None:
             return
         import estimator  # lazy: estimator imports core
         actual = (now_utc() - created).total_seconds()
-        estimator.record_estimate(DATA, str(rec.get("text", ""))[:80],
-                                  snap.get("est_s"), actual_s=actual,
-                                  bucket=snap.get("bucket"), cid=rec.get("id"))
+        est_s = snap.get("est_s")
+        wall_outlier = (isinstance(est_s, (int, float)) and est_s > 0
+                        and actual / est_s > estimator.WALL_OUTLIER_MAX_RATIO)
+        estimator.record_estimate(
+            DATA, str(rec.get("text", ""))[:80], est_s, actual_s=actual,
+            bucket=snap.get("bucket"), cid=rec.get("id"),
+            force_null_ratio=wall_outlier,
+            note=("wall-time outlier, excluded: open-to-close span "
+                  f"{actual / est_s:.0f}x the estimate; calendar time, "
+                  "not execution time") if wall_outlier else None)
     except Exception:
         pass
 

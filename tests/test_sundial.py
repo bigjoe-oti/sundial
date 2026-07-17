@@ -24,6 +24,7 @@ import core  # noqa: E402
 import decay  # noqa: E402
 import tzutil  # noqa: E402
 import policy  # noqa: E402
+import estimator  # noqa: E402
 
 WATCHER_DIR = Path(__file__).resolve().parent.parent / "watcher"
 sys.path.insert(0, str(WATCHER_DIR))
@@ -3495,6 +3496,98 @@ class TestAutonomyGate(unittest.TestCase):
             self.assertEqual(
                 policy.autonomy_decision({"confidence": 0.95}, entry)["action"],
                 "proceed")
+
+
+class TestWallTimeGuard(unittest.TestCase):
+    """done on a long-idle commitment must not poison calibration."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.data = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _events(self):
+        p = self.data / "habits.jsonl"
+        if not p.exists():
+            return []
+        return [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+
+    def test_outlier_ratio_recorded_null_with_note(self):
+        # actual 21x the estimate -> ratio must be None, note must explain
+        estimator.record_estimate(self.data, "t", 1200.0, actual_s=1200.0 * 21,
+                                  force_null_ratio=True,
+                                  note="wall-time outlier, excluded")
+        e = self._events()[-1]
+        self.assertIsNone(e["ratio"])
+        self.assertIn("wall-time", e["note"])
+        self.assertEqual(e["actual_s"], 1200.0 * 21)   # actual preserved
+
+    def test_normal_close_unaffected(self):
+        estimator.record_estimate(self.data, "t", 1200.0, actual_s=6000.0)
+        e = self._events()[-1]
+        self.assertAlmostEqual(e["ratio"], 5.0)
+        self.assertNotIn("note", e)
+
+    def test_null_ratio_excluded_from_calibration(self):
+        estimator.record_estimate(self.data, "a", 100.0, actual_s=80.0)
+        estimator.record_estimate(self.data, "b", 100.0, actual_s=100.0 * 30,
+                                  force_null_ratio=True, note="wall-time")
+        out = estimator.estimate_execution(1200, self.data)
+        self.assertEqual(out["n"], 1)   # only the sane sample counts
+
+    def test_close_estimate_guards_wall_outlier(self):
+        # end-to-end through core: commitment created long ago, closed now
+        import core as core_mod
+        old_data = core_mod.DATA
+        try:
+            self._repoint_core(core_mod)
+            created = core_mod.now_utc() - timedelta(days=5)
+            rec = {"id": "cafe0001", "text": "long idler", "status": "open",
+                   "created_at": created.isoformat(),
+                   "est": {"est_s": 1200.0, "bucket": "ops"}}
+            core_mod.write_json(core_mod.COMMITMENTS, [rec])
+            core_mod.resolve_commitment("cafe0001", "done")
+            e = self._events()[-1]
+            self.assertIsNone(e["ratio"])
+            self.assertIn("wall-time", e["note"])
+        finally:
+            self._restore_core(core_mod, old_data)
+
+    def test_close_estimate_normal_still_records_ratio(self):
+        import core as core_mod
+        old_data = core_mod.DATA
+        try:
+            self._repoint_core(core_mod)
+            created = core_mod.now_utc() - timedelta(minutes=15)
+            rec = {"id": "cafe0002", "text": "quick one", "status": "open",
+                   "created_at": created.isoformat(),
+                   "est": {"est_s": 1200.0, "bucket": "ops"}}
+            core_mod.write_json(core_mod.COMMITMENTS, [rec])
+            core_mod.resolve_commitment("cafe0002", "done")
+            e = self._events()[-1]
+            self.assertIsNotNone(e["ratio"])
+            self.assertLess(e["ratio"], 2.0)
+        finally:
+            self._restore_core(core_mod, old_data)
+
+    # helpers: repoint core's module paths at the temp dir the way
+    # TestCore.setUp does (copy that exact mechanism -- DATA, COMMITMENTS,
+    # and any module-level derived paths).
+    def _repoint_core(self, core_mod):
+        core_mod.DATA = self.data
+        core_mod.COMMITMENTS = self.data / "commitments.json"
+        core_mod.LEDGER = self.data / "session-ledger.json"
+        core_mod.BIRTH = self.data / "birth.json"
+        core_mod.WEIGHTS = self.data / "memory-weights.json"
+
+    def _restore_core(self, core_mod, old_data):
+        core_mod.DATA = old_data
+        core_mod.COMMITMENTS = old_data / "commitments.json"
+        core_mod.LEDGER = old_data / "session-ledger.json"
+        core_mod.BIRTH = old_data / "birth.json"
+        core_mod.WEIGHTS = old_data / "memory-weights.json"
 
 
 if __name__ == "__main__":

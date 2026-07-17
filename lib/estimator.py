@@ -16,6 +16,12 @@ import core  # noqa: E402  (lib/core.py, same directory)
 MIN_CONFIDENT_N = 5
 BUCKET_MIN_N = 5
 SMALL_N_FLOOR_RATIO = 2.0
+# A done-close records open->close WALL time as actual_s. When that wall
+# span dwarfs the estimate the pair is calendar idleness, not execution --
+# ratio would poison P50/P90 calibration (live incident 2026-07-17:
+# ratio 392.7x from a 5.5-day idle span). Past this bound the close is
+# recorded with ratio=None (excluded from calibration) plus a note.
+WALL_OUTLIER_MAX_RATIO = 20.0
 HABIT_FILES = ("habits.1.jsonl", "habits.jsonl")
 _DUR_TOKEN = re.compile(r"(\d+(?:\.\d+)?)\s*([smh]?)")
 # The WHOLE (trimmed) string must be a run of <number><optional s|m|h> tokens,
@@ -177,7 +183,7 @@ def calibration_health(data_dir):
 
 
 def record_estimate(data_dir, task, est_s, actual_s=None, bucket=None,
-                    cid=None):
+                    cid=None, note=None, force_null_ratio=False):
     """Append an estimate event to habits.jsonl. ratio computed when actual_s
     is given; actual_s=None pre-registers an open estimate (log est BEFORE the
     work, close it after -- keeps the loop honest). A single small append is
@@ -189,12 +195,16 @@ def record_estimate(data_dir, task, est_s, actual_s=None, bucket=None,
         # the percentile math, so it records as ratio=None (excluded from calib).
         ratio = (act / est if (act is not None and act >= 0 and est > 0)
                  else None)
+        if force_null_ratio:
+            ratio = None
         rec = {"kind": "estimate", "task": str(task), "est_s": est,
                "actual_s": act, "ratio": ratio, "ts": core.now_utc().isoformat()}
         if bucket:
             rec["bucket"] = str(bucket)
         if cid:
             rec["cid"] = str(cid)
+        if note:
+            rec["note"] = str(note)
         p = Path(data_dir)
         p.mkdir(parents=True, exist_ok=True)   # never silently drop on fresh env
         with open(p / "habits.jsonl", "a", encoding="utf-8") as f:
