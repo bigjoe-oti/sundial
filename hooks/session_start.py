@@ -128,8 +128,10 @@ def build_block(core, birth, previous):
         pass
     lines.append(
         "\nSession-voice duty: arm a Monitor on data/session_speak.json "
-        "(fallback ScheduleWakeup 1200s+); each wake refresh the claim "
-        "(core.write_session_claim) and speak/consume any queue."
+        "(fallback ScheduleWakeup 1200s+).\nEach wake, read "
+        "core.session_speak_pending() -- a non-open commitment_status means "
+        "a one-line correction, not a stale ask -- then mark spoken entries "
+        "via core.consume_session_speak([cids])."
     )
 
     lines.append(

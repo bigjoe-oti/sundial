@@ -191,13 +191,22 @@ def main():
     # Session-voice: every human prompt re-arms the claim so the watcher
     # keeps routing ripe fires here instead of popping up. Placed before
     # build_context (not after) so a bug in an optional block downstream
-    # can never suppress the heartbeat. Double fail-safe: write_session_claim
-    # is itself a no-op-on-error, this wrapper is belt-and-braces to match
-    # house style for call sites of fail-safe helpers.
+    # can never suppress the heartbeat. Skip the write when the existing
+    # claim is still fresh (< 60s old): a burst of prompts would otherwise
+    # fsync a near-identical claim file on every single one. Fail-safe: any
+    # doubt (missing/corrupt claim, parse trouble) means write anyway -- a
+    # skipped heartbeat is the worse failure mode than an extra write.
     try:
-        core.write_session_claim()
+        existing = core.read_json(core.DATA / "session_claim.json", None)
+        ts = core.parse_iso(existing.get("ts")) if isinstance(existing, dict) else None
+        recent = ts is not None and (core.now_utc() - ts).total_seconds() < 60
     except Exception:
-        pass
+        recent = False
+    if not recent:
+        try:
+            core.write_session_claim()
+        except Exception:
+            pass
 
     json.dump(
         {

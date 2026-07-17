@@ -183,10 +183,28 @@ except Exception:
 ' 2>/dev/null
 }
 
+queued_line() {
+    python3 -c '
+import json
+try:
+    with open("'"$DATA_DIR"'/session_speak.json") as f:
+        s = json.load(f)
+    q = s.get("queue") if isinstance(s, dict) else None
+    q = [e for e in q if isinstance(e, dict)] if isinstance(q, list) else []
+    n = sum(1 for e in q if not e.get("consumed"))
+    if n > 0:
+        print(f"🗣 {n} queued for session | color=orange")
+except Exception:
+    pass
+' 2>/dev/null
+}
+
 echo "---"
 echo "Presence: ${PRESENCE_WORD}"
 SNOOZE_LINE="$(snooze_line)"
 [ -n "$SNOOZE_LINE" ] && echo "$SNOOZE_LINE"
+QUEUED_LINE="$(queued_line)"
+[ -n "$QUEUED_LINE" ] && echo "$QUEUED_LINE"
 echo "---"
 detail_lines
 EST_LINE="$(estimate_line)"

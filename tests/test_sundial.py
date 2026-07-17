@@ -1911,6 +1911,20 @@ class TestPromptSubmitHook(unittest.TestCase):
             {"prompt": "<task-notification>\n<task-id>abc</task-id>"})
         self.assertFalse((core.DATA / "session_claim.json").exists())
 
+    def test_prompt_submit_skips_claim_write_within_60s(self):
+        # FIX I: a burst of human prompts within the same 60s must not
+        # fsync a near-identical claim file on every single one -- the
+        # second invocation should leave the file untouched.
+        self._run_main_with_stdin({"prompt": "first"})
+        claim_path = core.DATA / "session_claim.json"
+        first_ts = core.read_json(claim_path, {}).get("ts")
+        first_mtime = claim_path.stat().st_mtime
+        self._run_main_with_stdin({"prompt": "second"})
+        second_ts = core.read_json(claim_path, {}).get("ts")
+        second_mtime = claim_path.stat().st_mtime
+        self.assertEqual(first_ts, second_ts)
+        self.assertEqual(first_mtime, second_mtime)
+
 
 class TestSessionStartHook(unittest.TestCase):
     def setUp(self):
@@ -2015,11 +2029,21 @@ class TestSessionStartHook(unittest.TestCase):
                 (core.DATA, core.COMMITMENTS, core.BIRTH, core.LEDGER) = orig
 
     def test_standing_duty_line_always_present(self):
+        # FIX E: the duty text names the actual reconcile/consume helpers
+        # (not the raw file path or the retired write_session_claim
+        # mention), and stays within two lines.
         birth = core.get_or_create_birth()
         block = session_start.build_block(core, birth, None)
         self.assertIn(
             "Session-voice duty: arm a Monitor on data/session_speak.json",
             block)
+        self.assertIn("core.session_speak_pending()", block)
+        self.assertIn("core.consume_session_speak([cids])", block)
+        duty = [ln for ln in block.split("\n")
+               if ln.strip().startswith("Session-voice duty:")
+               or "session_speak_pending" in ln
+               or "consume_session_speak" in ln]
+        self.assertLessEqual(len(duty), 2)
 
     def test_speak_queue_line_present_when_unconsumed_entry_exists(self):
         core.write_json(core.DATA / "session_speak.json", {"queue": [
@@ -4219,8 +4243,15 @@ class TestSessionClaim(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.data = Path(self.tmp.name)
+        # Redirect core.DATA/COMMITMENTS too (not just the explicit data_dir=
+        # params below): the reconcile tests need core.add_commitment /
+        # core.resolve_commitment, which always go through the module
+        # globals -- and this rail requires tempdir-only, never data/.
+        self._orig = (core.DATA, core.COMMITMENTS)
+        core.DATA, core.COMMITMENTS = self.data, self.data / "commitments.json"
 
     def tearDown(self):
+        core.DATA, core.COMMITMENTS = self._orig
         self.tmp.cleanup()
 
     def test_claim_roundtrip_fresh(self):
@@ -4235,6 +4266,14 @@ class TestSessionClaim(unittest.TestCase):
             {"ts": (now - timedelta(seconds=3700)).isoformat(), "ttl_s": 3600}))
         self.assertFalse(core.session_claim_fresh(now, data_dir=self.data))
         (self.data / "session_claim.json").write_text("{broken")
+        self.assertFalse(core.session_claim_fresh(now, data_dir=self.data))
+
+    def test_claim_bool_ttl_rejected(self):
+        # bool is technically an int subclass in Python -- a JSON `true`
+        # must never be read as ttl_s=1 (fresh forever at any `now`).
+        now = datetime.now(timezone.utc)
+        core.write_json(self.data / "session_claim.json",
+                        {"ts": now.isoformat(), "ttl_s": True})
         self.assertFalse(core.session_claim_fresh(now, data_dir=self.data))
 
     def test_speak_append_prune_cap(self):
@@ -4298,12 +4337,61 @@ class TestSessionClaim(unittest.TestCase):
         self.assertEqual(len(q), 20)
         self.assertEqual([e["cid"] for e in q], [f"open{i}" for i in range(6, 26)])
 
-    def test_speak_append_failsafe_returns_zero(self):
+    def test_speak_append_failsafe_returns_negative_one(self):
+        # FIX B: -1 (not 0) signals a genuine write failure, distinct from
+        # "0 unconsumed evicted" on a normal successful append -- callers
+        # need to tell the two apart to know whether to fall back to
+        # desktop delivery.
         bad = self.data / "not_a_dir.json"
         bad.write_text("i am a file, not a directory")
         n = core.append_session_speak({"cid": "x", "rung": 1, "message": "m",
                                        "text": "t", "consumed": False}, data_dir=bad)
-        self.assertEqual(n, 0)
+        self.assertEqual(n, -1)
+
+    def test_consume_session_speak_flips_only_named_cids(self):
+        now = datetime.now(timezone.utc).isoformat()
+        core.write_json(self.data / "session_speak.json", {"queue": [
+            {"cid": "a", "rung": 1, "message": "m", "text": "t", "ts": now,
+             "consumed": False},
+            {"cid": "b", "rung": 1, "message": "m", "text": "t", "ts": now,
+             "consumed": False},
+            {"cid": "c", "rung": 1, "message": "m", "text": "t", "ts": now,
+             "consumed": True}]})
+        n = core.consume_session_speak(["a", "c"], data_dir=self.data)
+        self.assertEqual(n, 1)   # "c" already consumed -- only "a" flips
+        q = core.read_json(self.data / "session_speak.json", {})["queue"]
+        flags = {e["cid"]: e["consumed"] for e in q}
+        self.assertEqual(flags, {"a": True, "b": False, "c": True})
+
+    def test_consume_session_speak_missing_file_returns_zero(self):
+        self.assertEqual(core.consume_session_speak(["x"], data_dir=self.data), 0)
+
+    def test_session_speak_pending_annotates_commitment_status(self):
+        rec_open = core.add_commitment("still open", "+0m", kind="awaiting-reply")
+        rec_done = core.add_commitment("closed meanwhile", "+0m",
+                                       kind="awaiting-reply")
+        core.resolve_commitment(rec_done["id"], "done")
+        now = core.now_utc().isoformat()
+        core.write_json(self.data / "session_speak.json", {"queue": [
+            {"cid": rec_open["id"], "rung": 1, "message": "m", "text": "t",
+             "ts": now, "consumed": False},
+            {"cid": rec_done["id"], "rung": 1, "message": "m", "text": "t",
+             "ts": now, "consumed": False},
+            {"cid": "ghost", "rung": 1, "message": "m", "text": "t",
+             "ts": now, "consumed": False},
+            {"cid": rec_open["id"], "rung": 2, "message": "m2", "text": "t",
+             "ts": now, "consumed": True}]})   # consumed -> excluded
+        pending = core.session_speak_pending(data_dir=self.data)
+        status = {(e["cid"], e["rung"]): e["commitment_status"] for e in pending}
+        self.assertEqual(len(pending), 3)
+        self.assertEqual(status[(rec_open["id"], 1)], "open")
+        self.assertEqual(status[(rec_done["id"], 1)], "done")
+        self.assertEqual(status[("ghost", 1)], "missing")
+
+    def test_session_speak_pending_malformed_returns_empty(self):
+        (self.data / "session_speak.json").write_text(
+            "{not valid json", encoding="utf-8")
+        self.assertEqual(core.session_speak_pending(data_dir=self.data), [])
 
 
 class TestSessionRouting(unittest.TestCase):
@@ -4565,6 +4653,106 @@ class TestSessionRouting(unittest.TestCase):
                 self.assertEqual(len(fired), 1)   # popup delivered
                 self.assertEqual(len(chimed), 1)
                 self.assertEqual(spoken, [])
+                self.assertFalse((dd / "session_speak.json").exists())
+                saved = core.read_json(watcher.NOTIFIED, {})
+                self.assertEqual(saved[rec["id"]]["count"], 1)
+                habits = (dd / "habits.jsonl").read_text()
+                self.assertIn('"channel": "desktop"', habits)
+            finally:
+                self._unstub(orig)
+
+    def test_low_tier_terminal_rung2_mirrors_with_fresh_claim(self):
+        # FIX A: terminal must be computed against the commitment's OWN
+        # tier ceiling (policy.TIER_TABLE[tier]["rungs"]), not a hardcoded
+        # 3 -- low tier's ladder tops out at rung 2, so its terminal fire
+        # must mirror (queue AND popup) exactly like normal/high's rung 3
+        # does. speak_final must NOT fire: the rung==3 gate is preserved
+        # as-is (low never spoke pre-branch either).
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig, fired, chimed, spoken = self._stub(dd)
+            watcher.sample_presence = lambda: {"state": "away", "idle_s": 999.0,
+                                               "front_app": None}
+            try:
+                core.write_session_claim(data_dir=dd, ttl_s=3600)
+                now = core.now_utc()
+                created = now - timedelta(
+                    seconds=policy.TIER_TABLE["low"]["ceiling"] + 60)
+                c = {"id": "lo000001", "created_at": created.isoformat(),
+                     "due_at": created.isoformat(), "text": "low ask",
+                     "source": "t", "status": "open",
+                     "kind": "awaiting-reply", "weight": "low"}
+                core.write_json(core.COMMITMENTS, [c])
+                watcher.run_cycle(force=True)
+                q = core.read_json(dd / "session_speak.json", {}).get("queue", [])
+                self.assertEqual(len(q), 1)
+                self.assertEqual(q[0]["rung"], 2)          # low's terminal rung
+                self.assertEqual(len(fired), 1)            # AND popup mirrors
+                self.assertEqual(len(chimed), 1)
+                self.assertEqual(spoken, [])               # low tier never speaks
+                saved = core.read_json(watcher.NOTIFIED, {})
+                self.assertEqual(saved[c["id"]]["count"], 2)
+                habits = (dd / "habits.jsonl").read_text()
+                self.assertIn('"channel": "session"', habits)
+            finally:
+                self._unstub(orig)
+
+    def test_append_failure_falls_back_to_full_desktop_delivery(self):
+        # FIX B: if the session-queue write itself fails
+        # (append_session_speak returns -1), the fire must not vanish --
+        # deliver_fire falls back to full desktop delivery and reports
+        # channel "desktop", not "session".
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig, fired, chimed, spoken = self._stub(dd)
+            watcher.sample_presence = lambda: {"state": "away", "idle_s": 999.0,
+                                               "front_app": None}
+            orig_append = core.append_session_speak
+            core.append_session_speak = lambda *a, **k: -1
+            try:
+                core.write_session_claim(data_dir=dd, ttl_s=3600)
+                rec = core.add_commitment("water the plants", "+0m")
+                watcher.run_cycle(force=True)
+                self.assertEqual(len(fired), 1)     # popup delivered anyway
+                self.assertEqual(len(chimed), 1)
+                self.assertEqual(spoken, [])
+                self.assertFalse((dd / "session_speak.json").exists())
+                saved = core.read_json(watcher.NOTIFIED, {})
+                self.assertEqual(saved[rec["id"]]["count"], 1)
+                habits = (dd / "habits.jsonl").read_text()
+                self.assertIn('"channel": "desktop"', habits)
+            finally:
+                core.append_session_speak = orig_append
+                self._unstub(orig)
+
+    def test_claim_rechecked_after_deferral_stale_claim_pops(self):
+        # FIX G: a claim that was fresh at cycle-start but expires DURING
+        # the (up to 180s) wait_for_breakpoint wait must not have its fire
+        # queued into a now-dead session -- the batch loop must re-check
+        # claim freshness after the wait, not trust the cycle-start read.
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig, fired, chimed, spoken = self._stub(dd)
+            watcher.sample_presence = lambda: {"state": "elsewhere",
+                                               "idle_s": 2.0,
+                                               "front_app": "Figma"}
+
+            def expire_claim_then_bound(*a, **k):
+                # Simulate the claim going stale DURING the bounded wait.
+                core.write_json(dd / "session_claim.json", {
+                    "ts": (core.now_utc() - timedelta(hours=1)).isoformat(),
+                    "ttl_s": 3600.0, "session": "cli"})
+                return ("bound", 180.0)
+            watcher.wait_for_breakpoint = expire_claim_then_bound
+            try:
+                core.write_session_claim(data_dir=dd, ttl_s=3600)
+                rec = core.add_commitment("q?", "+0m", kind="awaiting-reply")
+                core.write_json(watcher.NOTIFIED, {rec["id"]: {
+                    "count": 0, "last": None, "unseen_s": 700.0,
+                    "here_s": 0.0, "last_cycle": core.now_utc().isoformat()}})
+                watcher.run_cycle(force=True)
+                self.assertEqual(len(fired), 1)     # popped, not queued
+                self.assertEqual(len(chimed), 1)
                 self.assertFalse((dd / "session_speak.json").exists())
                 saved = core.read_json(watcher.NOTIFIED, {})
                 self.assertEqual(saved[rec["id"]]["count"], 1)

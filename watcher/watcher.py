@@ -579,6 +579,67 @@ def desktop_notify(title: str, message: str) -> bool:
         return False
 
 
+def deliver_fire(c, rung, message, state, audible, claim, fire_now, *,
+                 chime_kind=None, speak_final_ok=False) -> str:
+    """Shared routing+delivery for a single ripe fire. Both delivery sites
+    (the return-nudge branch and the ladder batch loop) were duplicating
+    this exact routing+IO sequence -- a bug fixed in one kept reappearing
+    in the other, so it now lives in one place.
+
+    Routing: a fire is TERMINAL once `rung` reaches the commitment's own
+    tier ceiling (policy.TIER_TABLE[tier]["rungs"]) -- never a hardcoded 3,
+    so low tier's 2-rung ladder mirrors on its own terminal rung 2 instead
+    of never mirroring. A non-terminal fire with a live claim routes to the
+    session queue only; a terminal fire with a live claim mirrors both
+    channels; no claim (or a stale one) always goes straight to desktop --
+    byte-identical to the pre-session-voice path.
+
+    Failure fallback: if the session-queue write itself fails
+    (core.append_session_speak returns < 0 -- the entry was never queued),
+    this falls back to full desktop delivery for that fire rather than let
+    it vanish silently, and reports channel "desktop".
+
+    speak_final is gated on the literal rung == 3 (unchanged from before
+    the session-voice branch: low tier's terminal rung 2 never spoke, and
+    the return-nudge site never passes speak_final_ok=True, so it still
+    never speaks either).
+
+    Returns "session" or "desktop" for the caller's own fire habit log.
+    Entry/notified bookkeeping and the habit log call itself stay at each
+    call site."""
+    terminal = rung >= policy.TIER_TABLE[policy.tier_of(c)]["rungs"]
+    to_session = claim and not terminal
+    mirror = claim and terminal
+    ck = chime_kind if chime_kind is not None else rung
+
+    def _desktop_deliver():
+        desktop_notify("Sundial", message)
+        chime(ck, state, audible)
+        if speak_final_ok and rung == 3:
+            speak_final(message, audible, force=(policy.tier_of(c) == "high"))
+
+    routed = False
+    if to_session or mirror:
+        evicted = core.append_session_speak({
+            "cid": c.get("id"), "rung": rung, "message": message,
+            "text": str(c.get("text", ""))[:120],
+            "ts": fire_now.isoformat(), "consumed": False},
+            core.DATA)
+        if evicted < 0:
+            # The queue write failed -- this fire was never queued, so it
+            # must not silently vanish. One desktop delivery covers it.
+            _desktop_deliver()
+            return "desktop"
+        routed = True
+        if evicted > 0:
+            opportunities.log_habit({"kind": "speak-trim", "lost": evicted})
+
+    if (not to_session) or mirror:
+        _desktop_deliver()
+
+    return "session" if routed else "desktop"
+
+
 def record_presence(snap: dict, now) -> dict:
     """Persist the presence sample; return the PREVIOUS record ({} if none)
     for transition detection. 'since' survives while the state is unchanged —
@@ -665,9 +726,11 @@ def run_cycle(force: bool = False) -> None:
         "since": (prev.get("since") if prev.get("state") == snap["state"]
                   else now.isoformat())}, now)
     snoozed = snooze_active(now)
-    # Session-claim freshness: computed ONCE per cycle (not per commitment,
-    # not re-derived at the later fire_now) -- both delivery sites below
-    # (return-nudge and the batch fire loop) share this single read.
+    # Session-claim freshness: this cycle-start read is what the
+    # return-nudge site below uses (it runs before any wait). The batch
+    # fire loop re-checks it after its own possible wait_for_breakpoint
+    # deferral, since that wait can outlive this snapshot -- see the
+    # recheck comment beside `if batch:` below.
     claim = core.session_claim_fresh(now, core.DATA)
     returned = (prev.get("state") == "away"
                 and snap["state"] in ("here", "elsewhere"))
@@ -723,21 +786,12 @@ def run_cycle(force: bool = False) -> None:
                     else:
                         msg = pick_message(c.get("id", ""), RETURN_POOL,
                                            text=c.get("text", ""), away_m=away_m)
-                        to_session = claim and ripe < 3
-                        mirror = claim and ripe == 3
-                        if to_session or mirror:
-                            evicted = core.append_session_speak({
-                                "cid": c.get("id"), "rung": ripe,
-                                "message": msg,
-                                "text": str(c.get("text", ""))[:120],
-                                "ts": now.isoformat(), "consumed": False},
-                                core.DATA)
-                            if evicted > 0:
-                                opportunities.log_habit({
-                                    "kind": "speak-trim", "lost": evicted})
-                        if (not to_session) or mirror:
-                            desktop_notify("Sundial", msg)
-                            chime("return", snap["state"], audible)
+                        terminal = ripe >= policy.TIER_TABLE[
+                            policy.tier_of(c)]["rungs"]
+                        to_session = claim and not terminal
+                        channel = deliver_fire(c, ripe, msg, snap["state"],
+                                               audible, claim, now,
+                                               chime_kind="return")
                         entry["count"], entry["last"] = ripe, now.isoformat()
                         notified[c["id"]] = entry
                         dirty = True
@@ -745,9 +799,8 @@ def run_cycle(force: bool = False) -> None:
                         opportunities.log_habit({
                             "kind": "fire", "rung": "return", "state": snap["state"],
                             "defer_reason": "none", "deferred_s": 0.0,
-                            "muted": (not audible),
-                            "channel": ("session" if to_session or mirror
-                                       else "desktop")})
+                            "muted": True if to_session else (not audible),
+                            "channel": channel})
                 continue  # return-nudge replaces the regular ping this cycle
             hit = pending_ping(c, entry, now, state, app)
             if hit is None:
@@ -781,26 +834,21 @@ def run_cycle(force: bool = False) -> None:
             still_open = {x.get("id") for x in core.load_commitments()
                           if x.get("status") == "open"}
             batch = [b for b in batch if b[0].get("id") in still_open]
+        # Re-check claim freshness: the cycle-start read (top of run_cycle)
+        # can go stale during a real (up to DEFER_MAX_S) wait_for_breakpoint
+        # wait -- a claim that expired mid-wait must not route into a dead
+        # session. Cheap even when no wait happened above (state "away", or
+        # "here" with no ceiling item), since `now` barely moved. The
+        # return-nudge site above still uses the cycle-start read -- it
+        # runs BEFORE any wait, so there's nothing to go stale.
+        claim = core.session_claim_fresh(core.now_utc(), core.DATA)
         fire_now = core.now_utc()
         for c, entry, rung, message, _ceiling in batch:
             try:
-                to_session = claim and rung < 3
-                mirror = claim and rung == 3
-                if to_session or mirror:
-                    evicted = core.append_session_speak({
-                        "cid": c.get("id"), "rung": rung, "message": message,
-                        "text": str(c.get("text", ""))[:120],
-                        "ts": fire_now.isoformat(), "consumed": False},
-                        core.DATA)
-                    if evicted > 0:
-                        opportunities.log_habit({
-                            "kind": "speak-trim", "lost": evicted})
-                if (not to_session) or mirror:
-                    desktop_notify("Sundial", message)
-                    chime(rung, state, audible)
-                    if rung == 3:
-                        speak_final(message, audible,
-                                    force=(policy.tier_of(c) == "high"))
+                terminal = rung >= policy.TIER_TABLE[policy.tier_of(c)]["rungs"]
+                to_session = claim and not terminal
+                channel = deliver_fire(c, rung, message, state, audible,
+                                       claim, fire_now, speak_final_ok=True)
                 entry["count"], entry["last"] = rung, fire_now.isoformat()
                 entry["deferred_s"], entry["defer_reason"] = deferred_s, reason
                 notified[c["id"]] = entry
@@ -809,9 +857,8 @@ def run_cycle(force: bool = False) -> None:
                 opportunities.log_habit({
                     "kind": "fire", "rung": rung, "state": state,
                     "defer_reason": reason, "deferred_s": deferred_s,
-                    "muted": (not audible),
-                    "channel": ("session" if to_session or mirror
-                               else "desktop")})
+                    "muted": True if to_session else (not audible),
+                    "channel": channel})
             except Exception:
                 continue
 

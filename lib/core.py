@@ -389,13 +389,16 @@ def write_session_claim(data_dir=None, ttl_s=3600, session="cli"):
 
 
 def session_claim_fresh(now, data_dir=None) -> bool:
-    """True iff a live session claim exists. Missing/garbage/expired -> False."""
+    """True iff a live session claim exists. Missing/garbage/expired -> False.
+    ttl_s must be a real int/float -- bool is technically an int subclass in
+    Python but a stray `true` in the JSON must never be read as ttl_s=1."""
     try:
         d = Path(data_dir) if data_dir is not None else DATA
         c = read_json(d / "session_claim.json", None)
         ts = parse_iso(c.get("ts")) if isinstance(c, dict) else None
         ttl = c.get("ttl_s") if isinstance(c, dict) else None
-        return (ts is not None and isinstance(ttl, (int, float))
+        return (ts is not None
+                and isinstance(ttl, (int, float)) and not isinstance(ttl, bool)
                 and (now - ts).total_seconds() < ttl)
     except Exception:
         return False
@@ -405,45 +408,113 @@ def append_session_speak(entry, data_dir=None) -> int:
     """Queue a routed fire for the claimed session. Prunes consumed entries
     older than 24h, then appends. If the queue is still over the hard cap
     (20), evicts CONSUMED entries first (oldest first); only if that isn't
-    enough does it evict the oldest UNCONSUMED entries too. Fail-safe no-op.
+    enough does it evict the oldest UNCONSUMED entries too. The whole
+    load-modify-write runs under the shared ledger lock (house pattern: see
+    welcome_back.json in watcher.run_cycle) so a concurrent append/consume
+    can never lose an update.
 
-    Returns the number of UNCONSUMED entries the cap evicted (0 normally --
-    the cap should ordinarily be absorbed by stale consumed entries; also 0
-    on the fail-safe exception path). Callers use a nonzero return to log a
-    habit: losing an unconsumed, never-spoken fire is a signal, not routine
-    housekeeping."""
+    Returns:
+      >=0 -- the number of UNCONSUMED entries the cap evicted (0 normally --
+             the cap should ordinarily be absorbed by stale consumed
+             entries). Callers use a nonzero return to log a habit: losing
+             an unconsumed, never-spoken fire is a signal, not routine
+             housekeeping.
+      -1  -- write failed (the fail-safe exception path). This is NOT
+             "0 evicted": the entry was never queued at all, so callers
+             must fall back to full desktop delivery for that fire rather
+             than let it vanish silently.
+
+    (>=0 = unconsumed evicted on success; -1 = write failed.)"""
+    try:
+        with _ledger_lock():
+            d = Path(data_dir) if data_dir is not None else DATA
+            p = d / "session_speak.json"
+            cur = read_json(p, {})
+            q = cur.get("queue") if isinstance(cur, dict) else None
+            q = [e for e in q if isinstance(e, dict)] if isinstance(q, list) else []
+            cutoff = now_utc() - timedelta(hours=24)
+            def keep(e):
+                if not e.get("consumed"):
+                    return True
+                ts = parse_iso(e.get("ts"))
+                return ts is not None and ts > cutoff
+            q = [e for e in q if keep(e)]
+            q.append(dict(entry))
+            evicted_unconsumed = 0
+            overflow = len(q) - 20
+            if overflow > 0:
+                # Queue order is chronological (oldest first), so a plain
+                # left-to-right scan already yields oldest-first candidates.
+                consumed_order = [i for i, e in enumerate(q) if e.get("consumed")]
+                drop = set(consumed_order[:overflow])
+                remaining = overflow - len(drop)
+                if remaining > 0:
+                    unconsumed_order = [i for i, e in enumerate(q) if not e.get("consumed")]
+                    extra = unconsumed_order[:remaining]
+                    drop.update(extra)
+                    evicted_unconsumed = len(extra)
+                q = [e for i, e in enumerate(q) if i not in drop]
+            write_json(p, {"queue": q})
+            return evicted_unconsumed
+    except Exception:
+        return -1
+
+
+def consume_session_speak(cids, data_dir=None) -> int:
+    """Mark queued session-speak entries as consumed once the session has
+    spoken them. Runs under the same lock as append_session_speak (house
+    pattern: log calls stay OUTSIDE the lock, but there are none here --
+    this is pure load-modify-write). Returns the count of entries actually
+    flipped from unconsumed to consumed (already-consumed / unmatched cids
+    don't count). Fail-safe: any error (missing/corrupt file, bad data_dir)
+    returns 0 -- a failed mark-spoken must never raise into a hook."""
+    try:
+        cid_set = set(cids)
+        with _ledger_lock():
+            d = Path(data_dir) if data_dir is not None else DATA
+            p = d / "session_speak.json"
+            cur = read_json(p, {})
+            q = cur.get("queue") if isinstance(cur, dict) else None
+            q = [e for e in q if isinstance(e, dict)] if isinstance(q, list) else []
+            flipped = 0
+            for e in q:
+                if e.get("cid") in cid_set and not e.get("consumed"):
+                    e["consumed"] = True
+                    flipped += 1
+            if flipped:
+                write_json(p, {"queue": q})
+            return flipped
+    except Exception:
+        return 0
+
+
+def session_speak_pending(data_dir=None) -> list:
+    """Unconsumed session-speak queue entries, each annotated with
+    'commitment_status': the commitment's CURRENT status from
+    load_commitments() ('open'/'done'/'declined'/... ), or 'missing' if the
+    cid no longer resolves to any commitment. This is the reconciling read a
+    session should use instead of the raw queue file -- a non-open status
+    means the human already closed it out elsewhere, so the right move is a
+    one-line correction, not a stale re-ask. Fail-safe: any error
+    (missing/corrupt queue) returns []."""
     try:
         d = Path(data_dir) if data_dir is not None else DATA
         p = d / "session_speak.json"
         cur = read_json(p, {})
         q = cur.get("queue") if isinstance(cur, dict) else None
         q = [e for e in q if isinstance(e, dict)] if isinstance(q, list) else []
-        cutoff = now_utc() - timedelta(hours=24)
-        def keep(e):
-            if not e.get("consumed"):
-                return True
-            ts = parse_iso(e.get("ts"))
-            return ts is not None and ts > cutoff
-        q = [e for e in q if keep(e)]
-        q.append(dict(entry))
-        evicted_unconsumed = 0
-        overflow = len(q) - 20
-        if overflow > 0:
-            # Queue order is chronological (oldest first), so a plain
-            # left-to-right scan already yields oldest-first candidates.
-            consumed_order = [i for i, e in enumerate(q) if e.get("consumed")]
-            drop = set(consumed_order[:overflow])
-            remaining = overflow - len(drop)
-            if remaining > 0:
-                unconsumed_order = [i for i, e in enumerate(q) if not e.get("consumed")]
-                extra = unconsumed_order[:remaining]
-                drop.update(extra)
-                evicted_unconsumed = len(extra)
-            q = [e for i, e in enumerate(q) if i not in drop]
-        write_json(p, {"queue": q})
-        return evicted_unconsumed
+        by_id = {c.get("id"): c.get("status") for c in load_commitments()
+                if isinstance(c, dict)}
+        out = []
+        for e in q:
+            if e.get("consumed"):
+                continue
+            item = dict(e)
+            item["commitment_status"] = by_id.get(e.get("cid"), "missing")
+            out.append(item)
+        return out
     except Exception:
-        return 0
+        return []
 
 
 def due_commitments(horizon_hours: int = 24) -> list:

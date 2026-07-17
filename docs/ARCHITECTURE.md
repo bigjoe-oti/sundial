@@ -70,15 +70,19 @@ read as consent.
 
 ## Session-voice routing
 
-One routing decision, added immediately before delivery in the watcher's
-fire loop (batch fires and the return-nudge site alike): a fresh
-`session_claim.json` (written by the session, TTL 3600s) sends rungs 1–2
-to `session_speak.json` instead of a popup; rung 3 always mirrors to
-both, by declared exception. A stale or missing claim is byte-identical
-to today's popup path — nothing is ever left uncovered. Snooze, wall
-ceilings, and rung caps all apply upstream of this check, so the session
-channel can never receive a fire the desktop channel wouldn't; rung
-accounting in `notified.json` advances identically on either channel.
+One routing decision, made by a shared `deliver_fire` helper (`watcher.py`)
+called from both delivery sites (batch fires and the return-nudge site
+alike): a fresh `session_claim.json` (written by the session, TTL 3600s)
+sends non-terminal rungs to `session_speak.json` instead of a popup; the
+commitment's OWN terminal rung — tier-relative (`policy.TIER_TABLE[tier]
+["rungs"]`: 2 for low, 3 for normal/high), never a hardcoded 3 — always
+mirrors to both, by declared exception. A stale or missing claim is
+byte-identical to today's popup path — nothing is ever left uncovered. If
+the session-queue write itself fails, that fire falls back to full desktop
+delivery rather than vanish silently. Snooze, wall ceilings, and rung caps
+all apply upstream of this check, so the session channel can never receive
+a fire the desktop channel wouldn't; rung accounting in `notified.json`
+advances identically on either channel.
 Design record: `docs/superpowers/specs/2026-07-17-session-voice-design.md`.
 
 ## The estimation loop (Phase B)
