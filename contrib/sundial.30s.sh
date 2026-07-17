@@ -8,13 +8,15 @@ LOGO_B64="iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAAABGdBTUEAALGPC/xhBQAAAC
 # SwiftBar menu-bar face for Sundial. Read-only: never writes to data/,
 # never signals the watcher. Refreshes every 30s (see filename).
 #
-# Install: SwiftBar copies plugin scripts into its own plugin folder, so this
-# file cannot locate the project relative to itself. Instead it reads
-# SUNDIAL_HOME (default: "$HOME/sundial") -- point it at wherever you cloned
-# this project, either by exporting SUNDIAL_HOME before SwiftBar launches
-# (e.g. in a launchd wrapper) or by editing the default below.
+# Install: SYMLINK this file into your SwiftBar plugin folder -- it resolves
+# its own real location and finds the project from there (contrib/..), so one
+# tracked copy serves both git and the menu bar. A plain copied file falls
+# back to $HOME/sundial; either way an exported SUNDIAL_HOME wins.
 
-SUNDIAL_HOME="${SUNDIAL_HOME:-$HOME/sundial}"
+_SELF="$(readlink "$0" 2>/dev/null || echo "$0")"
+_ROOT="$(cd "$(dirname "$_SELF")/.." 2>/dev/null && pwd)"
+[ -d "$_ROOT/data" ] || _ROOT="$HOME/sundial"
+SUNDIAL_HOME="${SUNDIAL_HOME:-$_ROOT}"
 DATA_DIR="$SUNDIAL_HOME/data"
 PROJECT_DIR="$SUNDIAL_HOME"
 
