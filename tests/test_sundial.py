@@ -4241,5 +4241,200 @@ class TestSessionClaim(unittest.TestCase):
         self.assertEqual(n, 0)
 
 
+class TestSessionRouting(unittest.TestCase):
+    """Fresh session_claim.json routes ripe fires to session_speak.json
+    instead of a popup; rung 3 mirrors both channels; a stale/missing claim
+    pops exactly as before T2. Fixture/stub shapes copied from TestSnooze's
+    run_cycle tests (incident-#5 rail: desktop_notify/chime/speak_final/
+    _spawn always stubbed to recorders, restored in finally)."""
+
+    def _stub(self, dd):
+        orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                watcher.PRESENCE_FILE, watcher.sample_presence,
+                watcher.desktop_notify, watcher.wait_for_breakpoint,
+                watcher.sample_assertions_raw, watcher.sample_net,
+                watcher.sample_recent_fs, watcher.sample_builds,
+                watcher.sample_screen_locked,
+                watcher.chime, watcher.speak_final, watcher._spawn)
+        core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
+        watcher.NOTIFIED = dd / "notified.json"
+        watcher.PRESENCE_FILE = dd / "presence.json"
+        fired, chimed, spoken = [], [], []
+        watcher.desktop_notify = lambda t, m: fired.append(m) or True
+        watcher.chime = lambda *a, **k: chimed.append(a) or None
+        watcher.speak_final = lambda *a, **k: spoken.append(a) or None
+        watcher._spawn = lambda cmd: None
+        watcher.wait_for_breakpoint = lambda *a, **k: ("bound", 0.0)
+        watcher.sample_assertions_raw = lambda: ""
+        watcher.sample_net = lambda: None
+        watcher.sample_recent_fs = lambda: []
+        watcher.sample_builds = lambda: {}
+        watcher.sample_screen_locked = lambda: False
+        return orig, fired, chimed, spoken
+
+    def _unstub(self, orig):
+        (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+         watcher.PRESENCE_FILE, watcher.sample_presence,
+         watcher.desktop_notify, watcher.wait_for_breakpoint,
+         watcher.sample_assertions_raw, watcher.sample_net,
+         watcher.sample_recent_fs, watcher.sample_builds,
+         watcher.sample_screen_locked,
+         watcher.chime, watcher.speak_final, watcher._spawn) = orig
+
+    def test_fresh_claim_rung1_routes_to_queue_not_popup(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig, fired, chimed, spoken = self._stub(dd)
+            watcher.sample_presence = lambda: {"state": "away", "idle_s": 999.0,
+                                               "front_app": None}
+            try:
+                core.write_session_claim(data_dir=dd, ttl_s=3600)
+                rec = core.add_commitment("water the plants", "+0m")
+                watcher.run_cycle(force=True)
+                self.assertEqual(fired, [])   # popup recorder EMPTY
+                self.assertEqual(chimed, [])
+                self.assertEqual(spoken, [])
+                q = core.read_json(dd / "session_speak.json", {}).get("queue", [])
+                self.assertEqual(len(q), 1)
+                self.assertEqual(q[0]["cid"], rec["id"])
+                self.assertEqual(q[0]["rung"], 1)
+                self.assertIn("message", q[0])
+                self.assertFalse(q[0]["consumed"])
+                saved = core.read_json(watcher.NOTIFIED, {})
+                self.assertEqual(saved[rec["id"]]["count"], 1)
+                habits = (dd / "habits.jsonl").read_text()
+                self.assertIn('"channel": "session"', habits)
+            finally:
+                self._unstub(orig)
+
+    def test_stale_claim_pops_as_today(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig, fired, chimed, spoken = self._stub(dd)
+            watcher.sample_presence = lambda: {"state": "away", "idle_s": 999.0,
+                                               "front_app": None}
+            try:
+                # no session_claim.json written -> claim is missing/stale
+                rec = core.add_commitment("water the plants", "+0m")
+                watcher.run_cycle(force=True)
+                self.assertEqual(len(fired), 1)
+                self.assertEqual(len(chimed), 1)
+                self.assertFalse((dd / "session_speak.json").exists())
+                saved = core.read_json(watcher.NOTIFIED, {})
+                self.assertEqual(saved[rec["id"]]["count"], 1)
+                habits = (dd / "habits.jsonl").read_text()
+                self.assertIn('"channel": "desktop"', habits)
+            finally:
+                self._unstub(orig)
+
+    def test_rung3_mirrors_both_channels(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig, fired, chimed, spoken = self._stub(dd)
+            # legacy-degrade fixture (state None) forces a deterministic
+            # terminal rung 3, same shape as TestSnooze's FIX2 tests.
+            watcher.sample_presence = lambda: {"state": None, "idle_s": None,
+                                               "front_app": None}
+            try:
+                core.write_session_claim(data_dir=dd, ttl_s=3600)
+                now = core.now_utc()
+                created = now - timedelta(
+                    seconds=policy.TIER_TABLE["high"]["ceiling"] + 60)
+                c = {"id": "hi000009", "created_at": created.isoformat(),
+                     "due_at": created.isoformat(), "text": "urgent ask",
+                     "source": "t", "status": "open",
+                     "kind": "awaiting-reply", "weight": "high"}
+                core.write_json(core.COMMITMENTS, [c])
+                watcher.run_cycle(force=True)
+                q = core.read_json(dd / "session_speak.json", {}).get("queue", [])
+                self.assertEqual(len(q), 1)
+                self.assertEqual(q[0]["rung"], 3)
+                self.assertEqual(len(fired), 1)          # AND popup mirrors
+                self.assertEqual(len(chimed), 1)
+                self.assertEqual(len(spoken), 1)          # high tier forces speech
+                saved = core.read_json(watcher.NOTIFIED, {})
+                self.assertEqual(saved[c["id"]]["count"], 3)
+            finally:
+                self._unstub(orig)
+
+    def test_snooze_holds_session_channel_too(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig, fired, chimed, spoken = self._stub(dd)
+            watcher.sample_presence = lambda: {"state": "elsewhere", "idle_s": 2.0,
+                                               "front_app": "Figma"}
+            try:
+                core.write_session_claim(data_dir=dd, ttl_s=3600)
+                core.write_json(dd / "snooze.json", {
+                    "until": (core.now_utc()
+                             + timedelta(minutes=30)).isoformat(),
+                    "set_at": core.now_utc().isoformat()})
+                rec = core.add_commitment("q?", "+0m", kind="awaiting-reply")
+                core.write_json(watcher.NOTIFIED, {rec["id"]: {
+                    "count": 0, "last": None, "unseen_s": 600.0,
+                    "here_s": 0.0, "last_cycle": core.now_utc().isoformat()}})
+                watcher.run_cycle(force=True)
+                self.assertEqual(fired, [])
+                self.assertEqual(chimed, [])
+                self.assertEqual(spoken, [])
+                self.assertFalse((dd / "session_speak.json").exists())
+                saved = core.read_json(watcher.NOTIFIED, {})
+                self.assertEqual(saved[rec["id"]]["count"], 0)
+                habits = (dd / "habits.jsonl").read_text()
+                self.assertIn('"snooze-hold"', habits)
+                self.assertIn('"held": 1', habits)
+            finally:
+                self._unstub(orig)
+
+    def test_rung_accounting_parity(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig, fired, chimed, spoken = self._stub(dd)
+            watcher.sample_presence = lambda: {"state": "away", "idle_s": 999.0,
+                                               "front_app": None}
+            try:
+                # Run A: no claim -> desktop path.
+                rec_a = core.add_commitment("identical ask", "+0m")
+                watcher.run_cycle(force=True)
+                entry_a = core.read_json(watcher.NOTIFIED, {})[rec_a["id"]]
+
+                # Reset ledgers, run B: fresh claim -> session path.
+                core.write_json(core.COMMITMENTS, [])
+                core.write_json(watcher.NOTIFIED, {})
+                (dd / "habits.jsonl").unlink(missing_ok=True)
+                core.write_session_claim(data_dir=dd, ttl_s=3600)
+                rec_b = core.add_commitment("identical ask", "+0m")
+                watcher.run_cycle(force=True)
+                entry_b = core.read_json(watcher.NOTIFIED, {})[rec_b["id"]]
+
+                self.assertEqual(entry_a["count"], entry_b["count"])
+                self.assertEqual(set(entry_a.keys()), set(entry_b.keys()))
+            finally:
+                self._unstub(orig)
+
+    def test_speak_trim_habit_on_hard_cap_eviction(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig, fired, chimed, spoken = self._stub(dd)
+            watcher.sample_presence = lambda: {"state": "away", "idle_s": 999.0,
+                                               "front_app": None}
+            try:
+                core.write_session_claim(data_dir=dd, ttl_s=3600)
+                now = core.now_utc()
+                preload = [{"cid": f"pre{i}", "rung": 1, "message": "m",
+                            "text": "t", "ts": now.isoformat(),
+                            "consumed": False} for i in range(20)]
+                core.write_json(dd / "session_speak.json", {"queue": preload})
+                core.add_commitment("one more ask", "+0m")
+                watcher.run_cycle(force=True)
+                q = core.read_json(dd / "session_speak.json", {}).get("queue", [])
+                self.assertEqual(len(q), 20)   # cap held
+                habits = (dd / "habits.jsonl").read_text()
+                self.assertIn('"speak-trim"', habits)
+                self.assertIn('"lost": 1', habits)
+            finally:
+                self._unstub(orig)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
