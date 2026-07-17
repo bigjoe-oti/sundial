@@ -377,6 +377,52 @@ def snooze_active(now, data_dir=None) -> bool:
         return False
 
 
+def write_session_claim(data_dir=None, ttl_s=3600, session="cli"):
+    """Session heartbeat: 'a warm session is listening.' Fail-safe no-op."""
+    try:
+        d = Path(data_dir) if data_dir is not None else DATA
+        write_json(d / "session_claim.json",
+                   {"ts": now_utc().isoformat(), "ttl_s": float(ttl_s),
+                    "session": str(session)})
+    except Exception:
+        pass
+
+
+def session_claim_fresh(now, data_dir=None) -> bool:
+    """True iff a live session claim exists. Missing/garbage/expired -> False."""
+    try:
+        d = Path(data_dir) if data_dir is not None else DATA
+        c = read_json(d / "session_claim.json", None)
+        ts = parse_iso(c.get("ts")) if isinstance(c, dict) else None
+        ttl = c.get("ttl_s") if isinstance(c, dict) else None
+        return (ts is not None and isinstance(ttl, (int, float))
+                and (now - ts).total_seconds() < ttl)
+    except Exception:
+        return False
+
+
+def append_session_speak(entry, data_dir=None):
+    """Queue a routed fire for the claimed session. Prunes consumed entries
+    older than 24h; hard cap 20 (drop-oldest). Fail-safe no-op."""
+    try:
+        d = Path(data_dir) if data_dir is not None else DATA
+        p = d / "session_speak.json"
+        cur = read_json(p, {})
+        q = cur.get("queue") if isinstance(cur, dict) else None
+        q = [e for e in q if isinstance(e, dict)] if isinstance(q, list) else []
+        cutoff = now_utc() - timedelta(hours=24)
+        def keep(e):
+            if not e.get("consumed"):
+                return True
+            ts = parse_iso(e.get("ts"))
+            return ts is not None and ts > cutoff
+        q = [e for e in q if keep(e)]
+        q.append(dict(entry))
+        write_json(p, {"queue": q[-20:]})
+    except Exception:
+        pass
+
+
 def due_commitments(horizon_hours: int = 24) -> list:
     """Open commitments that are overdue or due within ``horizon_hours``.
     Returns list of (commitment, seconds_until_due) sorted soonest-first

@@ -4150,5 +4150,47 @@ class TestSnoozeCLI(unittest.TestCase):
         self.assertIn("not snoozed", out)
 
 
+class TestSessionClaim(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.data = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_claim_roundtrip_fresh(self):
+        now = datetime.now(timezone.utc)
+        core.write_session_claim(data_dir=self.data, ttl_s=3600)
+        self.assertTrue(core.session_claim_fresh(now, data_dir=self.data))
+
+    def test_claim_expired_missing_garbage(self):
+        now = datetime.now(timezone.utc)
+        self.assertFalse(core.session_claim_fresh(now, data_dir=self.data))
+        (self.data / "session_claim.json").write_text(json.dumps(
+            {"ts": (now - timedelta(seconds=3700)).isoformat(), "ttl_s": 3600}))
+        self.assertFalse(core.session_claim_fresh(now, data_dir=self.data))
+        (self.data / "session_claim.json").write_text("{broken")
+        self.assertFalse(core.session_claim_fresh(now, data_dir=self.data))
+
+    def test_speak_append_prune_cap(self):
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(hours=25)).isoformat()
+        core.write_json(self.data / "session_speak.json", {"queue": [
+            {"cid": "old1", "rung": 1, "message": "m", "text": "t",
+             "ts": old, "consumed": True}]})
+        core.append_session_speak({"cid": "new1", "rung": 1, "message": "m",
+                                   "text": "t", "ts": now.isoformat(),
+                                   "consumed": False}, data_dir=self.data)
+        q = core.read_json(self.data / "session_speak.json", {})["queue"]
+        self.assertEqual([e["cid"] for e in q], ["new1"])   # old consumed pruned
+        for i in range(25):
+            core.append_session_speak({"cid": f"c{i}", "rung": 1, "message": "m",
+                                       "text": "t", "ts": now.isoformat(),
+                                       "consumed": False}, data_dir=self.data)
+        q = core.read_json(self.data / "session_speak.json", {})["queue"]
+        self.assertEqual(len(q), 20)                        # cap, drop-oldest
+        self.assertEqual(q[-1]["cid"], "c24")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
