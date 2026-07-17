@@ -150,6 +150,20 @@ wherever you cloned this project — SwiftBar copies plugin scripts out of the
 repo, so the script can't find its own path and needs to be told. Read-only:
 it never writes to `data/` or signals the watcher.
 
+## Session voice
+
+Ripe fires can route into a claimed warm Claude session instead of a
+desktop popup — the session speaks them, time-situated ("came due 24
+minutes ago, while you were on the call"), instead of a template string.
+One channel per fire: a fresh claim takes rungs 1–2, and rung 3 always
+mirrors to both popup and session. Snooze, wall ceilings, and the
+per-tier ping caps all apply *before* this routing decision — the
+session channel can never receive a fire the desktop channel wouldn't,
+and rung accounting advances identically either way. A dead session
+stops refreshing its claim; the claim goes stale; popups resume exactly
+as before — nothing is ever left uncovered. Design:
+[docs/superpowers/specs/2026-07-17-session-voice-design.md](docs/superpowers/specs/2026-07-17-session-voice-design.md).
+
 ## Honesty rails
 
 - **No LLM decides when to wake.** Ripeness is date arithmetic. (Research

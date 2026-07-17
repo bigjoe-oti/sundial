@@ -29,6 +29,10 @@ Three actors, strictly separated. The separation *is* the design.
 │ habits.jsonl       append-only behavioral observations +         │
 │                    estimate open/close pairs (the ratio history) │
 │ session-ledger.json  dual clock: wall-ms × output tokens/session │
+│ session_claim.json heartbeat: fresh routes fires to the session, │
+│                     stale/missing falls back to popups           │
+│ session_speak.json queue of routed fires; the session drains,    │
+│                     marks consumed; watcher prunes/caps at 20    │
 │ presence.json · meeting_state.json · known_folders.json          │
 └──────────────┬───────────────────────────────────────────────────┘
                ▼ surfaced by hooks
@@ -63,6 +67,19 @@ proven by a dedicated ripeness-gated counter (`ripe_here_cycles`): ≥3 watcher
 cycles sampled strictly "here" while the ask was already ripe — sleep gaps
 and mere "present" (screen-share ambiguity) never count, so a blip can never
 read as consent.
+
+## Session-voice routing
+
+One routing decision, added immediately before delivery in the watcher's
+fire loop (batch fires and the return-nudge site alike): a fresh
+`session_claim.json` (written by the session, TTL 3600s) sends rungs 1–2
+to `session_speak.json` instead of a popup; rung 3 always mirrors to
+both, by declared exception. A stale or missing claim is byte-identical
+to today's popup path — nothing is ever left uncovered. Snooze, wall
+ceilings, and rung caps all apply upstream of this check, so the session
+channel can never receive a fire the desktop channel wouldn't; rung
+accounting in `notified.json` advances identically on either channel.
+Design record: `docs/superpowers/specs/2026-07-17-session-voice-design.md`.
 
 ## The estimation loop (Phase B)
 
