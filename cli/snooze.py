@@ -26,11 +26,14 @@ def main():
     now = core.now_utc()
 
     if args.duration is None:
-        s = core.read_json(p, None)
-        until = core.parse_iso(s.get("until")) if isinstance(s, dict) else None
-        if until and now < until:
-            print(f"snoozed for another {core.humanize_delta((until - now).total_seconds())}.")
-        else:
+        try:
+            s = core.read_json(p, None)
+            until = core.parse_iso(s.get("until")) if isinstance(s, dict) else None
+            if until and now < until:
+                print(f"snoozed for another {core.humanize_delta((until - now).total_seconds())}.")
+            else:
+                print("not snoozed.")
+        except Exception:
             print("not snoozed.")
         return
 
