@@ -29,7 +29,7 @@ def main():
         try:
             s = core.read_json(p, None)
             until = core.parse_iso(s.get("until")) if isinstance(s, dict) else None
-            if until and now < until:
+            if core.snooze_active(now):
                 print(f"snoozed for another {core.humanize_delta((until - now).total_seconds())}.")
             else:
                 print("not snoozed.")
@@ -37,7 +37,7 @@ def main():
             print("not snoozed.")
         return
 
-    if args.duration == "off":
+    if args.duration.lower() == "off":
         try:
             p.unlink()
         except FileNotFoundError:

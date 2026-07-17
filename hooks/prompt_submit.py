@@ -152,11 +152,22 @@ def build_context(core, data=None) -> str:
         import estimator
         state_p = core.DATA / "est_nudges.json"
         fired = core.read_json(state_p, {})
-        lines, new_fired = estimator.budget_flags(
-            core.load_commitments(), fired, core.now_utc())
-        if new_fired != fired and isinstance(new_fired, dict):
-            merged = dict(fired) if isinstance(fired, dict) else {}
-            merged.update(new_fired)
+        if not isinstance(fired, dict):
+            fired = {}
+        # Single load_commitments() call, reused for both the budget-flag
+        # scan and the open-id prune below (close_awaiting_detailed's own
+        # internal load, above, is a separate parse -- accepted for now
+        # rather than changing its API).
+        items = core.load_commitments()
+        lines, new_fired = estimator.budget_flags(items, fired, core.now_utc())
+        merged = dict(fired)
+        merged.update(new_fired)
+        # Prune closed commitments out of the flag state so a done/answered
+        # ask's threshold history doesn't linger in est_nudges.json forever.
+        open_ids = {c.get("id") for c in items
+                    if isinstance(c, dict) and c.get("status") == "open"}
+        merged = {k: v for k, v in merged.items() if k in open_ids}
+        if merged != fired:
             core.write_json(state_p, merged)
         if lines:
             out += "\n" + "\n".join(lines)

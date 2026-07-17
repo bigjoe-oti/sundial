@@ -232,7 +232,12 @@ def record_estimate(data_dir, task, est_s, actual_s=None, bucket=None,
     """Append an estimate event to habits.jsonl. ratio computed when actual_s
     is given; actual_s=None pre-registers an open estimate (log est BEFORE the
     work, close it after -- keeps the loop honest). A single small append is
-    atomic under O_APPEND, so no lock is needed. Fail-safe by contract."""
+    atomic under O_APPEND, so no lock is needed. Fail-safe by contract.
+
+    The wall-time-outlier guard lives HERE (not in callers): any ratio past
+    WALL_OUTLIER_MAX_RATIO self-nulls and self-explains, whether the caller
+    ever thought to check or not. `force_null_ratio` stays for callers that
+    already know their close is calendar time, not execution time."""
     try:
         est = float(est_s)
         act = float(actual_s) if actual_s is not None else None
@@ -240,6 +245,11 @@ def record_estimate(data_dir, task, est_s, actual_s=None, bucket=None,
         # the percentile math, so it records as ratio=None (excluded from calib).
         ratio = (act / est if (act is not None and act >= 0 and est > 0)
                  else None)
+        if ratio is not None and ratio > WALL_OUTLIER_MAX_RATIO:
+            ratio = None
+            if note is None:
+                note = (f"wall-time outlier, excluded: {act / est:.0f}x "
+                        "the estimate; calendar time, not execution time")
         if force_null_ratio:
             ratio = None
         rec = {"kind": "estimate", "task": str(task), "est_s": est,

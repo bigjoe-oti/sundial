@@ -326,7 +326,12 @@ def resolve_commitment(commitment_id: str, status: str = "done"):
 def _close_estimate(rec: dict) -> None:
     """Append the closing estimate event (actual + ratio) for a done
     commitment that opened one. Runs OUTSIDE the ledger lock (record_estimate
-    appends under O_APPEND and needs none). Fail-safe by contract."""
+    appends under O_APPEND and needs none). Fail-safe by contract.
+
+    The wall-time-outlier guard (a done-close on a long-idle commitment
+    must not poison calibration) lives INSIDE estimator.record_estimate
+    now, so this is a plain pass-through of the actual span -- no
+    caller-side ratio math, no force_null_ratio/note."""
     try:
         snap = rec.get("est")
         created = parse_iso(rec.get("created_at"))
@@ -334,16 +339,9 @@ def _close_estimate(rec: dict) -> None:
             return
         import estimator  # lazy: estimator imports core
         actual = (now_utc() - created).total_seconds()
-        est_s = snap.get("est_s")
-        wall_outlier = (isinstance(est_s, (int, float)) and est_s > 0
-                        and actual / est_s > estimator.WALL_OUTLIER_MAX_RATIO)
         estimator.record_estimate(
-            DATA, str(rec.get("text", ""))[:80], est_s, actual_s=actual,
-            bucket=snap.get("bucket"), cid=rec.get("id"),
-            force_null_ratio=wall_outlier,
-            note=("wall-time outlier, excluded: open-to-close span "
-                  f"{actual / est_s:.0f}x the estimate; calendar time, "
-                  "not execution time") if wall_outlier else None)
+            DATA, str(rec.get("text", ""))[:80], snap.get("est_s"),
+            actual_s=actual, bucket=snap.get("bucket"), cid=rec.get("id"))
     except Exception:
         pass
 
@@ -365,6 +363,18 @@ def close_awaiting_detailed(status: str = "answered") -> list:
 def close_awaiting(status: str = "answered") -> int:
     """Close every open awaiting-reply commitment (any session). Returns count."""
     return len(close_awaiting_detailed(status))
+
+
+def snooze_active(now, data_dir=None) -> bool:
+    """Owner-declared quiet window (data/snooze.json). Fail-safe: missing,
+    malformed, or expired file means not snoozed."""
+    try:
+        d = Path(data_dir) if data_dir is not None else DATA
+        s = read_json(d / "snooze.json", None)
+        until = parse_iso(s.get("until")) if isinstance(s, dict) else None
+        return until is not None and now < until
+    except Exception:
+        return False
 
 
 def due_commitments(horizon_hours: int = 24) -> list:

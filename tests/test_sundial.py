@@ -1875,6 +1875,17 @@ class TestPromptSubmitHook(unittest.TestCase):
         self.assertNotIn("⏱", block2)
         state2 = core.read_json(core.DATA / "est_nudges.json", {})
         self.assertEqual(state2, state)
+        # FIX5: closing the commitment must prune its flag state out of
+        # est_nudges.json on the very next hook call -- a closed ask's
+        # nudge history must not linger forever.
+        items = core.load_commitments()
+        for c in items:
+            if c.get("id") == cid:
+                c["status"] = "done"
+        core.write_json(core.COMMITMENTS, items)
+        prompt_submit.build_context(core)
+        state3 = core.read_json(core.DATA / "est_nudges.json", {})
+        self.assertNotIn(cid, state3)
 
 
 class TestSessionStartHook(unittest.TestCase):
@@ -2651,6 +2662,67 @@ class TestOpportunityCycle(unittest.TestCase):
          watcher.sample_assertions_raw, watcher.sample_screen_locked,
          watcher.sample_net, watcher.sample_recent_fs,
          watcher.sample_builds, watcher._spawn_prep_proc) = orig
+
+    def test_meeting_start_offer_held_when_snoozed_logs_habit(self):
+        # FIX8: an offer that clears its gates but is suppressed by an
+        # active snooze must log a snooze-hold habit, not vanish silently.
+        # desktop_notify/chime/speak_final are ALL stubbed to no-op
+        # recorders (not just via _env's _spawn interception) so this test
+        # can never leak a real popup, sound, or speech onto the owner's
+        # machine even if the delivery path is misjudged.
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            fired, chimed, spoken = [], [], []
+            orig = self._env(dd, procs={"zoom.us"})
+            orig_chime, orig_speak = watcher.chime, watcher.speak_final
+            watcher.desktop_notify = lambda t, m: fired.append((t, m)) or True
+            watcher.chime = lambda *a, **k: chimed.append(a) or None
+            watcher.speak_final = lambda *a, **k: spoken.append(a) or None
+            try:
+                core.write_json(dd / "snooze.json", {
+                    "until": (core.now_utc()
+                             + timedelta(minutes=30)).isoformat(),
+                    "set_at": core.now_utc().isoformat()})
+                watcher.run_cycle(force=True)
+                led = core.read_json(dd / "opportunities.json", [])
+                self.assertEqual(led[0]["kind"], "meeting-start")  # recorded
+                self.assertEqual(fired, [])                        # held
+                self.assertEqual(chimed, [])
+                self.assertEqual(spoken, [])
+                habits = (dd / "habits.jsonl").read_text()
+                self.assertIn('"snooze-hold"', habits)
+            finally:
+                self._restore(orig)
+                watcher.chime, watcher.speak_final = orig_chime, orig_speak
+
+    def test_build_finished_offer_held_when_snoozed_logs_habit(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            fired, chimed, spoken = [], [], []
+            orig = self._env(dd)
+            orig_chime, orig_speak = watcher.chime, watcher.speak_final
+            watcher.desktop_notify = lambda t, m: fired.append((t, m)) or True
+            watcher.chime = lambda *a, **k: chimed.append(a) or None
+            watcher.speak_final = lambda *a, **k: spoken.append(a) or None
+            core.write_json(dd / "build_state.json",
+                            {"111": {"cmd": "make", "etime_s": 300}})
+            core.write_json(dd / "snooze.json", {
+                "until": (core.now_utc()
+                         + timedelta(minutes=30)).isoformat(),
+                "set_at": core.now_utc().isoformat()})
+            try:
+                watcher.run_cycle(force=True)
+                led = core.read_json(dd / "opportunities.json", [])
+                self.assertTrue(
+                    any(r["kind"] == "build-finished" for r in led))
+                self.assertEqual(fired, [])
+                self.assertEqual(chimed, [])
+                self.assertEqual(spoken, [])
+                habits = (dd / "habits.jsonl").read_text()
+                self.assertIn('"snooze-hold"', habits)
+            finally:
+                self._restore(orig)
+                watcher.chime, watcher.speak_final = orig_chime, orig_speak
 
     def test_meeting_start_offers_once(self):
         with tempfile.TemporaryDirectory() as d:
@@ -3608,6 +3680,22 @@ class TestWallTimeGuard(unittest.TestCase):
         out = estimator.estimate_execution(1200, self.data)
         self.assertEqual(out["n"], 1)   # only the sane sample counts
 
+    def test_direct_record_estimate_auto_nulls_outlier_without_force(self):
+        # FIX4: the guard now lives INSIDE record_estimate itself -- a
+        # direct call (no force_null_ratio, no caller note) with a ratio
+        # past WALL_OUTLIER_MAX_RATIO must self-null and self-explain.
+        estimator.record_estimate(self.data, "t", 100.0, actual_s=100.0 * 21)
+        e = self._events()[-1]
+        self.assertIsNone(e["ratio"])
+        self.assertIn("wall-time", e["note"])
+        self.assertEqual(e["actual_s"], 2100.0)   # actual still preserved
+
+    def test_direct_record_estimate_sane_ratio_unaffected(self):
+        estimator.record_estimate(self.data, "t", 100.0, actual_s=100.0 * 5)
+        e = self._events()[-1]
+        self.assertAlmostEqual(e["ratio"], 5.0)
+        self.assertNotIn("note", e)
+
     def test_close_estimate_guards_wall_outlier(self):
         # end-to-end through core: commitment created long ago, closed now
         import core as core_mod
@@ -3694,13 +3782,372 @@ class TestSnooze(unittest.TestCase):
 
     def test_breakthrough_filter_keeps_high_tier_ceiling_only(self):
         import watcher as w
-        # batch entries are (commitment, entry, rung, message, ceiling)
-        # policy.tier_of reads the "weight" field (see lib/policy.py), not "tier".
-        high_ceiling = ({"id": "a", "weight": "high"}, {}, 3, "m", True)
-        high_no_ceiling = ({"id": "b", "weight": "high"}, {}, 1, "m", False)
-        norm_ceiling = ({"id": "c", "weight": "normal"}, {}, 3, "m", True)
-        kept = w.snooze_filter([high_ceiling, high_no_ceiling, norm_ceiling])
+        # batch entries are (commitment, entry, rung, message, ceiling).
+        # policy.tier_of reads the "weight" field (see lib/policy.py), not
+        # "tier". snooze_filter(batch, now) now LIVE re-checks
+        # wall_ceiling_passed itself rather than trusting the batch's stale
+        # ceiling snapshot (element [4]) -- build commitments a real
+        # wall_ceiling_passed can evaluate (created_at vs. each tier's
+        # ceiling), not bare tier-only dicts.
+        now = datetime.now(timezone.utc)
+        past_high = (now - timedelta(
+            seconds=policy.TIER_TABLE["high"]["ceiling"] + 10)).isoformat()
+        fresh_high = now.isoformat()
+        past_normal = (now - timedelta(
+            seconds=policy.TIER_TABLE["normal"]["ceiling"] + 10)).isoformat()
+        high_ceiling = ({"id": "a", "weight": "high", "created_at": past_high},
+                        {}, 3, "m", True)
+        high_no_ceiling = ({"id": "b", "weight": "high",
+                            "created_at": fresh_high}, {}, 1, "m", False)
+        norm_ceiling = ({"id": "c", "weight": "normal",
+                         "created_at": past_normal}, {}, 3, "m", True)
+        kept = w.snooze_filter(
+            [high_ceiling, high_no_ceiling, norm_ceiling], now)
         self.assertEqual([b[0]["id"] for b in kept], ["a"])
+
+    def test_breakthrough_filter_uses_live_recheck_not_stale_flag(self):
+        # The batch's own ceiling flag (element [4]) is a snapshot taken
+        # earlier in the cycle; snooze_filter must ignore it and re-derive
+        # ceiling-passed from `now` itself. A high-tier item whose stale
+        # flag says True but whose real created_at is still short of the
+        # ceiling must NOT break through.
+        import watcher as w
+        now = datetime.now(timezone.utc)
+        fresh_high_but_stale_flag_true = (
+            {"id": "z", "weight": "high", "created_at": now.isoformat()},
+            {}, 1, "m", True)   # element [4]=True is a lie for this `now`
+        kept = w.snooze_filter([fresh_high_but_stale_flag_true], now)
+        self.assertEqual(kept, [])
+
+    def test_return_nudge_held_when_snoozed_logs_habit(self):
+        # FIX1: a snoozed, normal-tier return-nudge must be held (no popup,
+        # no chime, no entry/count advance) and logged as a snooze-hold, not
+        # silently dropped -- AND it must be resolved right there, inside
+        # the return-nudge branch's own `continue`, never falling through
+        # into the generic pending_ping/batch/wait_for_breakpoint path
+        # (the old bug: `if returned and not snoozed` skipped the whole
+        # branch when snoozed, so the item fell through and paid for a
+        # real bounded wait it should never have entered).
+        # desktop_notify/chime/speak_final/_spawn are ALL stubbed to no-op
+        # recorders -- this reaches run_cycle's delivery path, so it must
+        # never be able to leak a real popup, sound, or speech.
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                    watcher.PRESENCE_FILE, watcher.sample_presence,
+                    watcher.desktop_notify, watcher.wait_for_breakpoint,
+                    watcher.sample_assertions_raw, watcher.sample_net,
+                    watcher.sample_recent_fs, watcher.sample_builds,
+                    watcher.chime, watcher.speak_final, watcher._spawn)
+            core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
+            watcher.NOTIFIED = dd / "notified.json"
+            watcher.PRESENCE_FILE = dd / "presence.json"
+            fired, chimed, spoken = [], [], []
+            watcher.desktop_notify = lambda t, m: fired.append(m) or True
+            watcher.chime = lambda *a, **k: chimed.append(a) or None
+            watcher.speak_final = lambda *a, **k: spoken.append(a) or None
+            watcher._spawn = lambda cmd: None
+            bp_calls = []
+            watcher.wait_for_breakpoint = (
+                lambda *a, **k: bp_calls.append(1) or ("bound", 0.0))
+            watcher.sample_assertions_raw = lambda: ""
+            watcher.sample_net = lambda: None
+            watcher.sample_recent_fs = lambda: []
+            watcher.sample_builds = lambda: {}
+            try:
+                rec = core.add_commitment("q?", "+0m", kind="awaiting-reply")
+                core.write_json(dd / "snooze.json", {
+                    "until": (core.now_utc()
+                             + timedelta(minutes=30)).isoformat(),
+                    "set_at": core.now_utc().isoformat()})
+                past = (core.now_utc() - timedelta(seconds=1800)).isoformat()
+                core.write_json(watcher.PRESENCE_FILE,
+                                {"state": "away", "since": past,
+                                 "idle_s": 999.0, "front_app": None})
+                core.write_json(watcher.NOTIFIED, {rec["id"]: {
+                    "count": 0, "last": None, "unseen_s": 1300.0,
+                    "here_s": 0.0, "last_cycle": core.now_utc().isoformat()}})
+                watcher.sample_presence = lambda: {"state": "elsewhere",
+                                                   "idle_s": 2.0,
+                                                   "front_app": "Figma"}
+                watcher.run_cycle(force=True)
+                self.assertEqual(fired, [])              # held, not delivered
+                self.assertEqual(chimed, [])
+                self.assertEqual(spoken, [])
+                saved = core.read_json(watcher.NOTIFIED, {})
+                self.assertEqual(saved[rec["id"]]["count"], 0)  # not advanced
+                habits = (dd / "habits.jsonl").read_text()
+                self.assertIn('"snooze-hold"', habits)
+                self.assertIn('"held": 1', habits)
+                self.assertEqual(bp_calls, [])   # never entered the batch path
+            finally:
+                (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                 watcher.PRESENCE_FILE, watcher.sample_presence,
+                 watcher.desktop_notify, watcher.wait_for_breakpoint,
+                 watcher.sample_assertions_raw, watcher.sample_net,
+                 watcher.sample_recent_fs, watcher.sample_builds,
+                 watcher.chime, watcher.speak_final, watcher._spawn) = orig
+
+    def test_return_nudge_breakthrough_high_tier_delivers_despite_snooze(self):
+        # FIX1 breakthrough case: high tier + wall ceiling passed still
+        # delivers the return-nudge even while snoozed. chime/speak_final
+        # are stubbed to no-op recorders (never let real audio/speech fire
+        # from a test); the recorders let us confirm chime WAS invoked
+        # (delivery really happened) without ever touching afplay/say.
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                    watcher.PRESENCE_FILE, watcher.sample_presence,
+                    watcher.desktop_notify, watcher.wait_for_breakpoint,
+                    watcher.sample_assertions_raw, watcher.sample_net,
+                    watcher.sample_recent_fs, watcher.sample_builds,
+                    watcher.chime, watcher.speak_final, watcher._spawn)
+            core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
+            watcher.NOTIFIED = dd / "notified.json"
+            watcher.PRESENCE_FILE = dd / "presence.json"
+            fired, chimed, spoken = [], [], []
+            watcher.desktop_notify = lambda t, m: fired.append(m) or True
+            watcher.chime = lambda *a, **k: chimed.append(a) or None
+            watcher.speak_final = lambda *a, **k: spoken.append(a) or None
+            watcher._spawn = lambda cmd: None
+            watcher.wait_for_breakpoint = lambda *a, **k: ("bound", 0.0)
+            watcher.sample_assertions_raw = lambda: ""
+            watcher.sample_net = lambda: None
+            watcher.sample_recent_fs = lambda: []
+            watcher.sample_builds = lambda: {}
+            try:
+                core.write_json(dd / "snooze.json", {
+                    "until": (core.now_utc()
+                             + timedelta(minutes=30)).isoformat(),
+                    "set_at": core.now_utc().isoformat()})
+                now = core.now_utc()
+                created = now - timedelta(
+                    seconds=policy.TIER_TABLE["high"]["ceiling"] + 60)
+                c = {"id": "hi000002", "created_at": created.isoformat(),
+                     "due_at": created.isoformat(), "text": "urgent ask",
+                     "source": "t", "status": "open",
+                     "kind": "awaiting-reply", "weight": "high"}
+                core.write_json(core.COMMITMENTS, [c])
+                past = (now - timedelta(seconds=1800)).isoformat()
+                core.write_json(watcher.PRESENCE_FILE,
+                                {"state": "away", "since": past,
+                                 "idle_s": 999.0, "front_app": None})
+                core.write_json(watcher.NOTIFIED, {c["id"]: {
+                    "count": 0, "last": None, "unseen_s": 0.0,
+                    "here_s": 0.0, "last_cycle": now.isoformat()}})
+                watcher.sample_presence = lambda: {"state": "elsewhere",
+                                                   "idle_s": 2.0,
+                                                   "front_app": "Figma"}
+                watcher.run_cycle(force=True)
+                self.assertEqual(len(fired), 1)          # breaks through
+                # Delivered via the RETURN_POOL voice, not a generic ladder
+                # pool -- the item must stay on the return-nudge path even
+                # when it breaks through a snooze, never fall through to
+                # pending_ping's tier-neutral/rung copy.
+                self.assertTrue(any(w in fired[0] for w in
+                                    ("away", "absence", "gone")), fired[0])
+                self.assertEqual(len(chimed), 1)   # return chime fired
+                self.assertEqual(spoken, [])       # return path never speaks
+                saved = core.read_json(watcher.NOTIFIED, {})
+                self.assertEqual(saved[c["id"]]["count"], 3)  # terminal rung
+            finally:
+                (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                 watcher.PRESENCE_FILE, watcher.sample_presence,
+                 watcher.desktop_notify, watcher.wait_for_breakpoint,
+                 watcher.sample_assertions_raw, watcher.sample_net,
+                 watcher.sample_recent_fs, watcher.sample_builds,
+                 watcher.chime, watcher.speak_final, watcher._spawn) = orig
+
+    def test_batch_path_held_when_snoozed_before_breakpoint_wait(self):
+        # FIX2: snooze filtering must run BEFORE wait_for_breakpoint, so a
+        # cycle whose whole batch is snooze-held never even calls the
+        # bounded-deferral watch. wait_for_breakpoint is stubbed to raise if
+        # invoked -- this fails loudly if filtering regresses to running
+        # after the wait (the old, wasteful/racy order).
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                    watcher.sample_presence, watcher.sample_assertions_raw,
+                    watcher.sample_screen_locked, watcher.sample_net,
+                    watcher.sample_recent_fs, watcher.sample_builds,
+                    watcher.wait_for_breakpoint)
+            core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
+            watcher.NOTIFIED = dd / "notified.json"
+            fired, chimed, spoken = [], [], []
+            orig_notify = watcher.desktop_notify
+            orig_spawn = watcher._spawn
+            orig_chime, orig_speak = watcher.chime, watcher.speak_final
+            watcher.desktop_notify = lambda t, m: fired.append(m) or True
+            watcher._spawn = lambda cmd: None
+            watcher.chime = lambda *a, **k: chimed.append(a) or None
+            watcher.speak_final = lambda *a, **k: spoken.append(a) or None
+            watcher.sample_presence = lambda: {"state": "elsewhere",
+                                               "idle_s": 2.0,
+                                               "front_app": "Figma"}
+            watcher.sample_assertions_raw = lambda: ""
+            watcher.sample_screen_locked = lambda: False
+            watcher.sample_net = lambda: None
+            watcher.sample_recent_fs = lambda: []
+            watcher.sample_builds = lambda: {}
+
+            def _boom(*a, **k):
+                raise AssertionError(
+                    "wait_for_breakpoint must not run once snooze empties "
+                    "the batch")
+            watcher.wait_for_breakpoint = _boom
+            try:
+                core.write_json(dd / "snooze.json", {
+                    "until": (core.now_utc()
+                             + timedelta(minutes=30)).isoformat(),
+                    "set_at": core.now_utc().isoformat()})
+                rec = core.add_commitment("q?", "+0m", kind="awaiting-reply")
+                core.write_json(watcher.NOTIFIED, {rec["id"]: {
+                    "count": 0, "last": None, "unseen_s": 600.0,
+                    "here_s": 0.0, "last_cycle": core.now_utc().isoformat()}})
+                watcher.run_cycle(force=True)
+                self.assertEqual(fired, [])
+                self.assertEqual(chimed, [])
+                self.assertEqual(spoken, [])
+                saved = core.read_json(watcher.NOTIFIED, {})
+                self.assertEqual(saved[rec["id"]]["count"], 0)
+                habits = (dd / "habits.jsonl").read_text()
+                self.assertIn('"snooze-hold"', habits)
+                self.assertIn('"held": 1', habits)
+            finally:
+                (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                 watcher.sample_presence, watcher.sample_assertions_raw,
+                 watcher.sample_screen_locked, watcher.sample_net,
+                 watcher.sample_recent_fs, watcher.sample_builds,
+                 watcher.wait_for_breakpoint) = orig
+                watcher.desktop_notify = orig_notify
+                watcher._spawn = orig_spawn
+                watcher.chime, watcher.speak_final = orig_chime, orig_speak
+
+    def test_batch_path_breakthrough_high_tier_ceiling_delivers_despite_snooze(self):
+        # FIX2 breakthrough case on the batch path (not the return-nudge
+        # path): a high-tier item past its wall ceiling still fires even
+        # though the owner has an active snooze window. chime/speak_final
+        # are stubbed to no-op recorders so the real terminal-rung
+        # (speaks-final) delivery path can be exercised without ever
+        # touching afplay/say.
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig = (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                    watcher.sample_presence, watcher.sample_assertions_raw,
+                    watcher.sample_screen_locked, watcher.sample_net,
+                    watcher.sample_recent_fs, watcher.sample_builds,
+                    watcher.wait_for_breakpoint)
+            core.DATA, core.COMMITMENTS = dd, dd / "commitments.json"
+            watcher.NOTIFIED = dd / "notified.json"
+            fired, chimed, spoken = [], [], []
+            orig_notify = watcher.desktop_notify
+            orig_spawn = watcher._spawn
+            orig_chime, orig_speak = watcher.chime, watcher.speak_final
+            watcher.desktop_notify = lambda t, m: fired.append(m) or True
+            watcher._spawn = lambda cmd: None
+            watcher.chime = lambda *a, **k: chimed.append(a) or None
+            watcher.speak_final = lambda *a, **k: spoken.append(a) or None
+            # Presence unknown -> legacy degrade path, same trick as
+            # test_run_cycle_fires_and_persists: deterministic, no live
+            # sensors, and NOT a "returned" transition (isolates the batch
+            # path from FIX1's return-nudge path).
+            watcher.sample_presence = lambda: {"state": None, "idle_s": None,
+                                               "front_app": None}
+            watcher.sample_assertions_raw = lambda: ""
+            watcher.sample_screen_locked = lambda: False
+            watcher.sample_net = lambda: None
+            watcher.sample_recent_fs = lambda: []
+            watcher.sample_builds = lambda: {}
+            watcher.wait_for_breakpoint = lambda *a, **k: ("bound", 0.0)
+            try:
+                core.write_json(dd / "snooze.json", {
+                    "until": (core.now_utc()
+                             + timedelta(minutes=30)).isoformat(),
+                    "set_at": core.now_utc().isoformat()})
+                now = core.now_utc()
+                created = now - timedelta(
+                    seconds=policy.TIER_TABLE["high"]["ceiling"] + 60)
+                c = {"id": "hi000001", "created_at": created.isoformat(),
+                     "due_at": created.isoformat(), "text": "urgent",
+                     "source": "t", "status": "open",
+                     "kind": "awaiting-reply", "weight": "high"}
+                core.write_json(core.COMMITMENTS, [c])
+                watcher.run_cycle(force=True)
+                self.assertEqual(len(fired), 1)
+                self.assertEqual(len(chimed), 1)     # terminal chime fired
+                self.assertEqual(len(spoken), 1)     # high-tier speaks final
+                saved = core.read_json(watcher.NOTIFIED, {})
+                self.assertEqual(saved[c["id"]]["count"], 3)  # terminal rung
+            finally:
+                (core.DATA, core.COMMITMENTS, watcher.NOTIFIED,
+                 watcher.sample_presence, watcher.sample_assertions_raw,
+                 watcher.sample_screen_locked, watcher.sample_net,
+                 watcher.sample_recent_fs, watcher.sample_builds,
+                 watcher.wait_for_breakpoint) = orig
+                watcher.desktop_notify = orig_notify
+                watcher._spawn = orig_spawn
+                watcher.chime, watcher.speak_final = orig_chime, orig_speak
+
+
+class TestSnoozeCLI(unittest.TestCase):
+    """cli/snooze.py: off-parsing and status delegation to core.snooze_active
+    (FIX3 + FIX6). No prior coverage existed for this CLI verb."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.data = Path(self.tmp.name)
+        self._orig_data = core.DATA
+        core.DATA = self.data
+        self._orig_refresh = core.refresh_menubar
+        core.refresh_menubar = lambda: None
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "cli"))
+        import snooze as snooze_cli
+        self.snooze_cli = snooze_cli
+        self._orig_argv = sys.argv
+
+    def tearDown(self):
+        core.DATA = self._orig_data
+        core.refresh_menubar = self._orig_refresh
+        sys.argv = self._orig_argv
+        self.tmp.cleanup()
+
+    def _run(self, *argv):
+        import io
+        import contextlib
+        sys.argv = ["snooze", *argv]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.snooze_cli.main()
+        return out.getvalue()
+
+    def test_off_case_insensitive_clears(self):
+        core.write_json(self.data / "snooze.json", {
+            "until": (core.now_utc() + timedelta(minutes=30)).isoformat(),
+            "set_at": core.now_utc().isoformat()})
+        for variant in ("OFF", "Off", "off"):
+            core.write_json(self.data / "snooze.json", {
+                "until": (core.now_utc()
+                         + timedelta(minutes=30)).isoformat(),
+                "set_at": core.now_utc().isoformat()})
+            out = self._run(variant)
+            self.assertIn("cleared", out)
+            self.assertFalse((self.data / "snooze.json").exists())
+
+    def test_status_uses_core_snooze_active(self):
+        out = self._run()
+        self.assertIn("not snoozed", out)
+        core.write_json(self.data / "snooze.json", {
+            "until": (core.now_utc() + timedelta(minutes=30)).isoformat(),
+            "set_at": core.now_utc().isoformat()})
+        out = self._run()
+        self.assertIn("snoozed for another", out)
+
+    def test_status_expired_reads_not_snoozed(self):
+        core.write_json(self.data / "snooze.json", {
+            "until": (core.now_utc() - timedelta(minutes=1)).isoformat(),
+            "set_at": core.now_utc().isoformat()})
+        out = self._run()
+        self.assertIn("not snoozed", out)
 
 
 if __name__ == "__main__":

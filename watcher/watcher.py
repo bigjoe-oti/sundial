@@ -533,23 +533,21 @@ def speak_final(message: str, audible=True, force=False) -> None:
         pass
 
 
-def snooze_active(now, data_dir=None) -> bool:
-    """Owner-declared quiet window (data/snooze.json). Fail-safe: missing,
-    malformed, or expired file means not snoozed."""
-    try:
-        d = Path(data_dir) if data_dir is not None else core.DATA
-        s = core.read_json(d / "snooze.json", None)
-        until = core.parse_iso(s.get("until")) if isinstance(s, dict) else None
-        return until is not None and now < until
-    except Exception:
-        return False
+# Owner-declared quiet window: lives in lib/core.py now (shared with the
+# CLI's status branch), kept as a plain module-level alias here so existing
+# call sites (bare `snooze_active(now)`) and test monkeypatches keep working.
+snooze_active = core.snooze_active
 
 
-def snooze_filter(batch):
+def snooze_filter(batch, now):
     """During snooze only a HIGH-tier commitment past its wall ceiling may
     deliver -- the owner's word holds everything else. Same breakthrough
-    shape as the ceiling honesty rail."""
-    return [b for b in batch if b[4] and policy.tier_of(b[0]) == "high"]
+    shape as the ceiling honesty rail. Re-checks wall_ceiling_passed live
+    against `now` rather than trusting each batch entry's ceiling flag
+    (element [4]), which is a snapshot taken earlier in the cycle and can
+    go stale across a bounded wait_for_breakpoint deferral."""
+    return [b for b in batch
+            if policy.tier_of(b[0]) == "high" and wall_ceiling_passed(b[0], now)]
 
 
 def desktop_notify(title: str, message: str) -> bool:
@@ -710,21 +708,27 @@ def run_cycle(force: bool = False) -> None:
                 accrue(entry, state, now, created, ripe=was_ripe)
                 notified[c["id"]] = entry
                 dirty = True
-            if returned and not snoozed and c.get("kind") == "awaiting-reply":
+            if returned and c.get("kind") == "awaiting-reply":
                 ripe = ripe_rung(c, entry, now, snap["state"])
                 if ripe >= 1 and ripe > entry.get("count", 0):
-                    msg = pick_message(c.get("id", ""), RETURN_POOL,
-                                       text=c.get("text", ""), away_m=away_m)
-                    desktop_notify("Sundial", msg)
-                    chime("return", snap["state"], audible)
-                    entry["count"], entry["last"] = ripe, now.isoformat()
-                    notified[c["id"]] = entry
-                    dirty = True
-                    state_changed = True
-                    opportunities.log_habit({
-                        "kind": "fire", "rung": "return", "state": snap["state"],
-                        "defer_reason": "none", "deferred_s": 0.0,
-                        "muted": (not audible)})
+                    breakthrough = (policy.tier_of(c) == "high"
+                                    and wall_ceiling_passed(c, now))
+                    if snoozed and not breakthrough:
+                        opportunities.log_habit({"kind": "snooze-hold",
+                                                 "held": 1})
+                    else:
+                        msg = pick_message(c.get("id", ""), RETURN_POOL,
+                                           text=c.get("text", ""), away_m=away_m)
+                        desktop_notify("Sundial", msg)
+                        chime("return", snap["state"], audible)
+                        entry["count"], entry["last"] = ripe, now.isoformat()
+                        notified[c["id"]] = entry
+                        dirty = True
+                        state_changed = True
+                        opportunities.log_habit({
+                            "kind": "fire", "rung": "return", "state": snap["state"],
+                            "defer_reason": "none", "deferred_s": 0.0,
+                            "muted": (not audible)})
                 continue  # return-nudge replaces the regular ping this cycle
             hit = pending_ping(c, entry, now, state, app)
             if hit is None:
@@ -737,6 +741,17 @@ def run_cycle(force: bool = False) -> None:
         except Exception:
             continue
 
+    # Snooze state is sampled once per cycle, BEFORE the (possibly minutes-
+    # long) bounded breakpoint wait below: a snooze expiring mid-cycle
+    # delivers next cycle rather than mid-wait (<=10 min granularity,
+    # accepted). Filtering here first also means a fully-held batch never
+    # pays for a real wait_for_breakpoint call at all.
+    if snoozed:
+        held = len(batch)
+        batch = snooze_filter(batch, core.now_utc())
+        if held - len(batch) > 0:
+            opportunities.log_habit({"kind": "snooze-hold",
+                                     "held": held - len(batch)})
     if batch:
         deferred_s, reason = 0.0, "none"
         if state in ("elsewhere", "present") or (
@@ -747,12 +762,6 @@ def run_cycle(force: bool = False) -> None:
             still_open = {x.get("id") for x in core.load_commitments()
                           if x.get("status") == "open"}
             batch = [b for b in batch if b[0].get("id") in still_open]
-        if snoozed:
-            held = len(batch)
-            batch = snooze_filter(batch)
-            if held - len(batch) > 0:
-                opportunities.log_habit({"kind": "snooze-hold",
-                                         "held": held - len(batch)})
         fire_now = core.now_utc()
         for c, entry, rung, message, _ceiling in batch:
             try:
@@ -857,6 +866,9 @@ def run_cycle(force: bool = False) -> None:
                     chime("return", state, audible)
                     opportunities.count_offer(today)
                     state_changed = True
+                else:
+                    opportunities.log_habit({"kind": "snooze-hold",
+                                             "held": 1})
             if rec:
                 habit = {"kind": "offer", "opp": kind, "app": evt.get("app")}
                 if stale:
@@ -888,6 +900,9 @@ def run_cycle(force: bool = False) -> None:
                     chime("return", state, audible)
                     opportunities.count_offer(today)
                     state_changed = True
+                else:
+                    opportunities.log_habit({"kind": "snooze-hold",
+                                             "held": 1})
             if rec:
                 opportunities.log_habit({"kind": "offer",
                                          "opp": "build-finished", "cmd": cmd})

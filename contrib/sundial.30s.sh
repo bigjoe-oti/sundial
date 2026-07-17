@@ -165,8 +165,26 @@ except Exception:
 ' 2>/dev/null
 }
 
+snooze_line() {
+    python3 -c '
+import json, datetime
+try:
+    with open("'"$DATA_DIR"'/snooze.json") as f:
+        s = json.load(f)
+    until = datetime.datetime.fromisoformat(s["until"])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    left_s = (until - now).total_seconds()
+    if left_s > 0:
+        print(f"😴 snoozed — {int(left_s // 60)}m left | color=orange")
+except Exception:
+    pass
+' 2>/dev/null
+}
+
 echo "---"
 echo "Presence: ${PRESENCE_WORD}"
+SNOOZE_LINE="$(snooze_line)"
+[ -n "$SNOOZE_LINE" ] && echo "$SNOOZE_LINE"
 echo "---"
 detail_lines
 EST_LINE="$(estimate_line)"
