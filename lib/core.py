@@ -401,9 +401,17 @@ def session_claim_fresh(now, data_dir=None) -> bool:
         return False
 
 
-def append_session_speak(entry, data_dir=None):
+def append_session_speak(entry, data_dir=None) -> int:
     """Queue a routed fire for the claimed session. Prunes consumed entries
-    older than 24h; hard cap 20 (drop-oldest). Fail-safe no-op."""
+    older than 24h, then appends. If the queue is still over the hard cap
+    (20), evicts CONSUMED entries first (oldest first); only if that isn't
+    enough does it evict the oldest UNCONSUMED entries too. Fail-safe no-op.
+
+    Returns the number of UNCONSUMED entries the cap evicted (0 normally --
+    the cap should ordinarily be absorbed by stale consumed entries; also 0
+    on the fail-safe exception path). Callers use a nonzero return to log a
+    habit: losing an unconsumed, never-spoken fire is a signal, not routine
+    housekeeping."""
     try:
         d = Path(data_dir) if data_dir is not None else DATA
         p = d / "session_speak.json"
@@ -418,9 +426,24 @@ def append_session_speak(entry, data_dir=None):
             return ts is not None and ts > cutoff
         q = [e for e in q if keep(e)]
         q.append(dict(entry))
-        write_json(p, {"queue": q[-20:]})
+        evicted_unconsumed = 0
+        overflow = len(q) - 20
+        if overflow > 0:
+            # Queue order is chronological (oldest first), so a plain
+            # left-to-right scan already yields oldest-first candidates.
+            consumed_order = [i for i, e in enumerate(q) if e.get("consumed")]
+            drop = set(consumed_order[:overflow])
+            remaining = overflow - len(drop)
+            if remaining > 0:
+                unconsumed_order = [i for i, e in enumerate(q) if not e.get("consumed")]
+                extra = unconsumed_order[:remaining]
+                drop.update(extra)
+                evicted_unconsumed = len(extra)
+            q = [e for i, e in enumerate(q) if i not in drop]
+        write_json(p, {"queue": q})
+        return evicted_unconsumed
     except Exception:
-        pass
+        return 0
 
 
 def due_commitments(horizon_hours: int = 24) -> list:

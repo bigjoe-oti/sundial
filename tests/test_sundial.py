@@ -4178,18 +4178,67 @@ class TestSessionClaim(unittest.TestCase):
         core.write_json(self.data / "session_speak.json", {"queue": [
             {"cid": "old1", "rung": 1, "message": "m", "text": "t",
              "ts": old, "consumed": True}]})
-        core.append_session_speak({"cid": "new1", "rung": 1, "message": "m",
-                                   "text": "t", "ts": now.isoformat(),
-                                   "consumed": False}, data_dir=self.data)
-        q = core.read_json(self.data / "session_speak.json", {})["queue"]
-        self.assertEqual([e["cid"] for e in q], ["new1"])   # old consumed pruned
-        for i in range(25):
-            core.append_session_speak({"cid": f"c{i}", "rung": 1, "message": "m",
+        n = core.append_session_speak({"cid": "new1", "rung": 1, "message": "m",
                                        "text": "t", "ts": now.isoformat(),
                                        "consumed": False}, data_dir=self.data)
+        self.assertEqual(n, 0)                               # no cap trim yet
+        q = core.read_json(self.data / "session_speak.json", {})["queue"]
+        self.assertEqual([e["cid"] for e in q], ["new1"])   # old consumed pruned
+        evicted = 0
+        for i in range(25):
+            evicted += core.append_session_speak(
+                {"cid": f"c{i}", "rung": 1, "message": "m", "text": "t",
+                 "ts": now.isoformat(), "consumed": False}, data_dir=self.data)
         q = core.read_json(self.data / "session_speak.json", {})["queue"]
         self.assertEqual(len(q), 20)                        # cap, drop-oldest
         self.assertEqual(q[-1]["cid"], "c24")
+        # 1 (new1) + 25 appends - 20 kept = 6 unconsumed entries lost overall,
+        # all of them reported back (none were consumed, so nothing else to
+        # evict first).
+        self.assertEqual(evicted, 6)
+
+    def test_speak_cap_evicts_consumed_before_unconsumed(self):
+        now = datetime.now(timezone.utc)
+        queue = [{"cid": f"done{i}", "rung": 1, "message": "m", "text": "t",
+                  "ts": now.isoformat(), "consumed": True} for i in range(10)]
+        queue += [{"cid": f"open{i}", "rung": 1, "message": "m", "text": "t",
+                   "ts": now.isoformat(), "consumed": False} for i in range(14)]
+        core.write_json(self.data / "session_speak.json", {"queue": queue})
+        n = core.append_session_speak({"cid": "open14", "rung": 1, "message": "m",
+                                       "text": "t", "ts": now.isoformat(),
+                                       "consumed": False}, data_dir=self.data)
+        # 25 entries total (10 consumed-recent + 15 unconsumed), 5 over cap:
+        # the 5 oldest consumed entries absorb the whole trim, so no
+        # unconsumed fire is lost and the return is 0.
+        self.assertEqual(n, 0)
+        q = core.read_json(self.data / "session_speak.json", {})["queue"]
+        self.assertEqual(len(q), 20)
+        unconsumed = [e["cid"] for e in q if not e["consumed"]]
+        consumed = [e["cid"] for e in q if e["consumed"]]
+        self.assertEqual(set(unconsumed), {f"open{i}" for i in range(15)})
+        self.assertEqual(consumed, [f"done{i}" for i in range(5, 10)])  # newest 5 kept
+
+    def test_speak_cap_evicts_oldest_unconsumed_when_none_consumed(self):
+        now = datetime.now(timezone.utc)
+        queue = [{"cid": f"open{i}", "rung": 1, "message": "m", "text": "t",
+                  "ts": now.isoformat(), "consumed": False} for i in range(25)]
+        core.write_json(self.data / "session_speak.json", {"queue": queue})
+        n = core.append_session_speak({"cid": "open25", "rung": 1, "message": "m",
+                                       "text": "t", "ts": now.isoformat(),
+                                       "consumed": False}, data_dir=self.data)
+        # 26 unconsumed entries, 6 over cap, nothing consumed to absorb it ->
+        # 6 unconsumed fires evicted, reported back, newest 20 survive.
+        self.assertEqual(n, 6)
+        q = core.read_json(self.data / "session_speak.json", {})["queue"]
+        self.assertEqual(len(q), 20)
+        self.assertEqual([e["cid"] for e in q], [f"open{i}" for i in range(6, 26)])
+
+    def test_speak_append_failsafe_returns_zero(self):
+        bad = self.data / "not_a_dir.json"
+        bad.write_text("i am a file, not a directory")
+        n = core.append_session_speak({"cid": "x", "rung": 1, "message": "m",
+                                       "text": "t", "consumed": False}, data_dir=bad)
+        self.assertEqual(n, 0)
 
 
 if __name__ == "__main__":
