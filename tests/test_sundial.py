@@ -1855,6 +1855,27 @@ class TestPromptSubmitHook(unittest.TestCase):
         block = prompt_submit.build_context(core)        # no data arg: back-compat
         self.assertNotIn("<presence-return>", block)
 
+    def test_budget_flag_fires_once_via_hook_and_persists_state(self):
+        # Built directly (not via add_commitment) so the P90 snapshot is
+        # exact: 40m, matching TestBudgetFlags' shape from _attach_estimate.
+        past = (core.now_utc() - timedelta(minutes=22)).isoformat()   # 55%
+        cid = "nudge01"
+        core.write_json(core.COMMITMENTS, [{
+            "id": cid, "text": "nudge me", "status": "open",
+            "created_at": past,
+            "est": {"est_s": 40 * 60 * 0.8, "p50_s": 40 * 48,
+                    "p90_s": 40 * 60, "n": 8, "confidence": "high"}}])
+        block = prompt_submit.build_context(core)
+        self.assertIn("⏱", block)           # the clock glyph, once
+        self.assertIn("50%", block)
+        state = core.read_json(core.DATA / "est_nudges.json", {})
+        self.assertEqual(sorted(state[cid]), [0.5])
+        # same threshold, next prompt -> silent, state unchanged
+        block2 = prompt_submit.build_context(core)
+        self.assertNotIn("⏱", block2)
+        state2 = core.read_json(core.DATA / "est_nudges.json", {})
+        self.assertEqual(state2, state)
+
 
 class TestSessionStartHook(unittest.TestCase):
     def setUp(self):
@@ -3144,6 +3165,56 @@ class TestEstimatorLedger(unittest.TestCase):
             self.assertEqual(h["n_review"], 1)
             self.assertEqual(
                 estimator.calibration_health(Path(d) / "nope")["n_exec"], 0)
+
+
+class TestBudgetFlags(unittest.TestCase):
+    def _c(self, cid, minutes_ago, p90_min=40.0, status="open", kind=None):
+        created = (datetime.now(timezone.utc)
+                   - timedelta(minutes=minutes_ago)).isoformat()
+        c = {"id": cid, "text": f"task {cid}", "status": status,
+             "created_at": created,
+             "est": {"est_s": p90_min * 60 * 0.8, "p50_s": p90_min * 48,
+                     "p90_s": p90_min * 60, "n": 8, "confidence": "high"}}
+        if kind:
+            c["kind"] = kind
+        return c
+
+    def test_crossing_fires_once(self):
+        now = datetime.now(timezone.utc)
+        c = self._c("aa", minutes_ago=22)     # 55% of a 40m P90
+        lines, fired = estimator.budget_flags([c], {}, now)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("50%", lines[0])
+        # same state again -> silent
+        lines2, _ = estimator.budget_flags([c], fired, now)
+        self.assertEqual(lines2, [])
+
+    def test_multiple_thresholds_highest_only(self):
+        now = datetime.now(timezone.utc)
+        c = self._c("bb", minutes_ago=34)     # 85% -> crossed 0.5 and 0.8
+        lines, fired = estimator.budget_flags([c], {}, now)
+        self.assertEqual(len(lines), 1)       # one line, the highest
+        self.assertIn("80%", lines[0])
+        self.assertEqual(sorted(fired["bb"]), [0.5, 0.8])
+
+    def test_stale_and_closed_and_asks_skipped(self):
+        now = datetime.now(timezone.utc)
+        stale = self._c("cc", minutes_ago=40 * 4)          # >3x P90
+        closed = self._c("dd", minutes_ago=22, status="done")
+        ask = self._c("ee", minutes_ago=22, kind="awaiting-reply")
+        no_est = {"id": "ff", "text": "bare", "status": "open",
+                  "created_at": now.isoformat()}
+        lines, fired = estimator.budget_flags(
+            [stale, closed, ask, no_est], {}, now)
+        self.assertEqual(lines, [])
+        self.assertEqual(fired, {})
+
+    def test_malformed_degrade_silent(self):
+        now = datetime.now(timezone.utc)
+        junk = [{"id": "gg", "status": "open", "est": "not-a-dict",
+                 "created_at": "garbage"}, "not-even-a-dict"]
+        lines, fired = estimator.budget_flags(junk, "bad-state", now)
+        self.assertEqual(lines, [])
 
 
 class TestEstimatorAPI(unittest.TestCase):

@@ -146,6 +146,22 @@ def build_context(core, data=None) -> str:
         out += welcome_back_block(core, (data or {}).get("transcript_path"))
     except Exception:
         pass
+    # Budget-crossing flags (execution clock): once per threshold per
+    # commitment; state in data/est_nudges.json. Fail-safe: never blocks.
+    try:
+        import estimator
+        state_p = core.DATA / "est_nudges.json"
+        fired = core.read_json(state_p, {})
+        lines, new_fired = estimator.budget_flags(
+            core.load_commitments(), fired, core.now_utc())
+        if new_fired != fired and isinstance(new_fired, dict):
+            merged = dict(fired) if isinstance(fired, dict) else {}
+            merged.update(new_fired)
+            core.write_json(state_p, merged)
+        if lines:
+            out += "\n" + "\n".join(lines)
+    except Exception:
+        pass
     return out
 
 

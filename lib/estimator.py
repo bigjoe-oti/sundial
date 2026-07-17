@@ -169,6 +169,51 @@ def sanity_line(est_s, ttd_s, calib):
             f"pad it or tighten scope.")
 
 
+NUDGE_THRESHOLDS = (0.5, 0.8, 1.0)
+NUDGE_STALE_X = 3.0
+
+
+def budget_flags(commitments, fired, now):
+    """One-line budget-crossing flags for open estimated plain commitments.
+    Pure: no IO, no clock. `fired` maps cid -> [thresholds already flagged];
+    returns (lines, new_fired). A crossing flags ONCE (highest new threshold
+    only -- a flag, not a counter). elapsed > NUDGE_STALE_X * P90 is calendar
+    staleness, not a live overrun: skipped (session-start running-long flag
+    owns those). Malformed anything degrades to silence."""
+    lines, new_fired = [], {}
+    if not isinstance(fired, dict):
+        fired = {}
+    for c in commitments if isinstance(commitments, list) else []:
+        try:
+            if (not isinstance(c, dict) or c.get("status") != "open"
+                    or c.get("kind") == "awaiting-reply"):
+                continue
+            snap = c.get("est")
+            created = core.parse_iso(c.get("created_at"))
+            if not isinstance(snap, dict) or created is None:
+                continue
+            p90 = snap.get("p90_s")
+            if not isinstance(p90, (int, float)) or p90 <= 0:
+                continue
+            frac = (now - created).total_seconds() / p90
+            if frac > NUDGE_STALE_X:
+                continue
+            done = [t for t in fired.get(c.get("id"), []) if t in NUDGE_THRESHOLDS]
+            crossed = [t for t in NUDGE_THRESHOLDS if frac >= t and t not in done]
+            if not crossed:
+                if done:
+                    new_fired[c.get("id")] = done
+                continue
+            top = max(crossed)
+            lines.append(
+                f"⏱ {str(c.get('text', ''))[:48]}: {int(top * 100)}% of its "
+                f"P90 ({core.humanize_delta(p90)}) elapsed since open.")
+            new_fired[c.get("id")] = sorted(set(done) | set(crossed))
+        except Exception:
+            continue
+    return lines, new_fired
+
+
 def calibration_health(data_dir):
     """One-glance loop health for the surfaces: closed execution samples,
     their median ratio, and review-clock sample count. Never raises."""
