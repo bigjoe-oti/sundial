@@ -4435,6 +4435,79 @@ class TestSessionRouting(unittest.TestCase):
             finally:
                 self._unstub(orig)
 
+    def test_return_nudge_fresh_claim_routes_to_queue_not_popup(self):
+        # Coverage gap flagged in task-2-review.md: the return-nudge
+        # delivery site (watcher.py ~726-750) is structurally identical to
+        # the well-tested batch site but no test in the suite ever drove
+        # returned=True together with a fresh claim. presence.json seeding
+        # copied verbatim from TestSnooze's return-nudge tests -- the only
+        # place in the suite that produces returned=True.
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig, fired, chimed, spoken = self._stub(dd)
+            watcher.sample_presence = lambda: {"state": "elsewhere",
+                                               "idle_s": 2.0,
+                                               "front_app": "Figma"}
+            try:
+                core.write_session_claim(data_dir=dd, ttl_s=3600)
+                rec = core.add_commitment("q?", "+0m", kind="awaiting-reply")
+                past = (core.now_utc() - timedelta(seconds=1800)).isoformat()
+                core.write_json(watcher.PRESENCE_FILE,
+                                {"state": "away", "since": past,
+                                 "idle_s": 999.0, "front_app": None})
+                core.write_json(watcher.NOTIFIED, {rec["id"]: {
+                    "count": 0, "last": None, "unseen_s": 700.0,
+                    "here_s": 0.0, "last_cycle": core.now_utc().isoformat()}})
+                watcher.run_cycle(force=True)
+                self.assertEqual(fired, [])   # popup recorder EMPTY
+                self.assertEqual(chimed, [])
+                self.assertEqual(spoken, [])
+                q = core.read_json(dd / "session_speak.json", {}).get("queue", [])
+                self.assertEqual(len(q), 1)
+                self.assertEqual(q[0]["cid"], rec["id"])
+                self.assertEqual(q[0]["rung"], 1)
+                saved = core.read_json(watcher.NOTIFIED, {})
+                self.assertEqual(saved[rec["id"]]["count"], 1)  # advanced
+                self.assertIsNotNone(saved[rec["id"]]["last"])
+                habits = (dd / "habits.jsonl").read_text()
+                self.assertIn('"kind": "fire"', habits)
+                self.assertIn('"channel": "session"', habits)
+            finally:
+                self._unstub(orig)
+
+    def test_return_nudge_no_claim_pops_as_today(self):
+        # Same returned=True setup as above, but with NO session_claim.json
+        # -- proves the return-nudge site still falls back to the popup
+        # path exactly as it did before T2 when there's no warm session to
+        # route to.
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d)
+            orig, fired, chimed, spoken = self._stub(dd)
+            watcher.sample_presence = lambda: {"state": "elsewhere",
+                                               "idle_s": 2.0,
+                                               "front_app": "Figma"}
+            try:
+                # no session_claim.json written -> claim is missing/stale
+                rec = core.add_commitment("q?", "+0m", kind="awaiting-reply")
+                past = (core.now_utc() - timedelta(seconds=1800)).isoformat()
+                core.write_json(watcher.PRESENCE_FILE,
+                                {"state": "away", "since": past,
+                                 "idle_s": 999.0, "front_app": None})
+                core.write_json(watcher.NOTIFIED, {rec["id"]: {
+                    "count": 0, "last": None, "unseen_s": 700.0,
+                    "here_s": 0.0, "last_cycle": core.now_utc().isoformat()}})
+                watcher.run_cycle(force=True)
+                self.assertEqual(len(fired), 1)   # popup delivered
+                self.assertEqual(len(chimed), 1)
+                self.assertEqual(spoken, [])
+                self.assertFalse((dd / "session_speak.json").exists())
+                saved = core.read_json(watcher.NOTIFIED, {})
+                self.assertEqual(saved[rec["id"]]["count"], 1)
+                habits = (dd / "habits.jsonl").read_text()
+                self.assertIn('"channel": "desktop"', habits)
+            finally:
+                self._unstub(orig)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
