@@ -185,7 +185,17 @@ proposes timeouts for agents stuck "waiting on human" — unshipped).
 triggers beat LLM ones. The deepest prior art is Horvitz et al.'s
 **PRIORITIES** prototype (Microsoft Research, 1999), which already did
 presence-aware channel laddering — desktop→pager escalation timed by how
-long the user had been away. Sundial stands on that lineage rather than
+long the user had been away.
+The mechanism under present-silence — sensor-gated delivery timing with a
+confidence measure, instead of elapsed-time firing — is also Horvitz-era
+prior art: "Attention-Sensitive Alerting" ([UAI 1999](https://arxiv.org/abs/1301.6707))
+framed it, and [US7,444,383](https://patents.google.com/patent/US7444383)
+(bounded deferral via local sensors, filed 2004) implemented it, decades
+before us. What we could not find is that mechanism applied to an agent
+gating its own self-initiated speech; a 2026 adversarial prior-art sweep
+([digest](docs/research/2026-07-17-temporal-scene-sweep.md)) is the current
+record of where each claim stands.
+Sundial stands on that lineage rather than
 beside it: what we could not find anywhere is this *combination* — the
 agent-blocked-on-human framing, local-first zero-dependency packaging, and
 a terminal autonomy contract (the agent proceeds on stated judgment or
