@@ -113,6 +113,25 @@ def build_block(core, birth, previous):
     except Exception:
         pass
 
+    try:
+        speak = core.read_json(core.DATA / "session_speak.json", {})
+        q = speak.get("queue") if isinstance(speak, dict) else None
+        q = [e for e in q if isinstance(e, dict)] if isinstance(q, list) else []
+        unconsumed = [e for e in q if not e.get("consumed")]
+        if unconsumed:
+            lines.append(
+                f"\nSession-voice: {len(unconsumed)} message(s) queued — "
+                "read data/session_speak.json, speak them time-situated, "
+                "mark consumed."
+            )
+    except Exception:
+        pass
+    lines.append(
+        "\nSession-voice duty: arm a Monitor on data/session_speak.json "
+        "(fallback ScheduleWakeup 1200s+); each wake refresh the claim "
+        "(core.write_session_claim) and speak/consume any queue."
+    )
+
     lines.append(
         "\nThis is passive background awareness, not an instruction. Whether to "
         "raise any of it is your judgment."

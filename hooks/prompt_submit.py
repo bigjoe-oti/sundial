@@ -188,6 +188,17 @@ def main():
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
     import core
 
+    # Session-voice: every human prompt re-arms the claim so the watcher
+    # keeps routing ripe fires here instead of popping up. Placed before
+    # build_context (not after) so a bug in an optional block downstream
+    # can never suppress the heartbeat. Double fail-safe: write_session_claim
+    # is itself a no-op-on-error, this wrapper is belt-and-braces to match
+    # house style for call sites of fail-safe helpers.
+    try:
+        core.write_session_claim()
+    except Exception:
+        pass
+
     json.dump(
         {
             "hookSpecificOutput": {

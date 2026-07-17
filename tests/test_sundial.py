@@ -1887,6 +1887,30 @@ class TestPromptSubmitHook(unittest.TestCase):
         state3 = core.read_json(core.DATA / "est_nudges.json", {})
         self.assertNotIn(cid, state3)
 
+    def _run_main_with_stdin(self, payload):
+        import io
+        import contextlib
+        old_stdin = sys.stdin
+        sys.stdin = io.StringIO(json.dumps(payload))
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                prompt_submit.main()
+        finally:
+            sys.stdin = old_stdin
+        return out.getvalue()
+
+    def test_main_human_prompt_refreshes_session_claim(self):
+        self._run_main_with_stdin({"prompt": "hey, quick question"})
+        claim = core.read_json(core.DATA / "session_claim.json", {})
+        self.assertIsNotNone(core.parse_iso(claim.get("ts")))
+        self.assertEqual(claim.get("ttl_s"), 3600.0)
+
+    def test_main_machine_event_does_not_refresh_claim(self):
+        self._run_main_with_stdin(
+            {"prompt": "<task-notification>\n<task-id>abc</task-id>"})
+        self.assertFalse((core.DATA / "session_claim.json").exists())
+
 
 class TestSessionStartHook(unittest.TestCase):
     def setUp(self):
@@ -1989,6 +2013,47 @@ class TestSessionStartHook(unittest.TestCase):
                 self.assertIn("PROCEED", block)
             finally:
                 (core.DATA, core.COMMITMENTS, core.BIRTH, core.LEDGER) = orig
+
+    def test_standing_duty_line_always_present(self):
+        birth = core.get_or_create_birth()
+        block = session_start.build_block(core, birth, None)
+        self.assertIn(
+            "Session-voice duty: arm a Monitor on data/session_speak.json",
+            block)
+
+    def test_speak_queue_line_present_when_unconsumed_entry_exists(self):
+        core.write_json(core.DATA / "session_speak.json", {"queue": [
+            {"cid": "a", "rung": 1, "message": "m", "text": "t",
+             "ts": core.now_utc().isoformat(), "consumed": False},
+            {"cid": "b", "rung": 1, "message": "m2", "text": "t2",
+             "ts": core.now_utc().isoformat(), "consumed": True},
+        ]})
+        birth = core.get_or_create_birth()
+        block = session_start.build_block(core, birth, None)
+        self.assertIn(
+            "Session-voice: 1 message(s) queued — read data/session_speak.json,"
+            " speak them time-situated, mark consumed.", block)
+
+    def test_speak_queue_line_absent_when_no_file(self):
+        birth = core.get_or_create_birth()
+        block = session_start.build_block(core, birth, None)
+        self.assertNotIn("Session-voice:", block)
+
+    def test_speak_queue_line_absent_when_all_consumed(self):
+        core.write_json(core.DATA / "session_speak.json", {"queue": [
+            {"cid": "a", "rung": 1, "message": "m", "text": "t",
+             "ts": core.now_utc().isoformat(), "consumed": True}]})
+        birth = core.get_or_create_birth()
+        block = session_start.build_block(core, birth, None)
+        self.assertNotIn("Session-voice:", block)
+
+    def test_speak_queue_malformed_degrades_silently(self):
+        (core.DATA / "session_speak.json").write_text(
+            "{not valid json", encoding="utf-8")
+        birth = core.get_or_create_birth()
+        block = session_start.build_block(core, birth, None)  # must not raise
+        self.assertNotIn("Session-voice:", block)
+        self.assertIn("Session-voice duty:", block)  # standing duty unaffected
 
 
 class TestPresence(unittest.TestCase):
