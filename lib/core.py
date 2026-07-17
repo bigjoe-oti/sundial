@@ -31,10 +31,23 @@ except Exception:  # pragma: no cover
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA = PROJECT_ROOT / "data"
 
+# deprecated import-time bindings — kept only so existing test repoint
+# tuples stay valid; all internal code derives from DATA at call time.
 COMMITMENTS = DATA / "commitments.json"
 LEDGER = DATA / "session-ledger.json"
 BIRTH = DATA / "birth.json"
 WEIGHTS = DATA / "memory-weights.json"
+
+
+def _path(name: str) -> Path:
+    """Call-time path derivation under the CURRENT core.DATA. DATA is
+    rebound by tests (to an isolated tempdir); the four constants above are
+    bound once at import time and go stale the moment a test repoints DATA
+    without also repointing the matching sibling constant -- the exact
+    "test rebinds core.DATA but forgets COMMITMENTS/LEDGER/BIRTH" shape that
+    caused a live data/ wipe (incident #6). Every internal read/write in
+    this module goes through here instead of the stale constants."""
+    return DATA / name
 
 # Where your agent's long-term memory lives (for decay scoring). Set
 # SUNDIAL_MEMORY_DIR to your harness's memory dir (Claude Code:
@@ -161,10 +174,10 @@ def _ledger_lock():
 # Birth + age
 # --------------------------------------------------------------------------- #
 def get_or_create_birth() -> dict:
-    b = read_json(BIRTH, None)
+    b = read_json(_path("birth.json"), None)
     if not isinstance(b, dict) or "created_at" not in b:
         b = {"created_at": now_utc().isoformat()}
-        write_json(BIRTH, b)
+        write_json(_path("birth.json"), b)
     return b
 
 
@@ -208,7 +221,7 @@ def humanize_delta(seconds: float) -> str:
 # Commitments (ripening promises)
 # --------------------------------------------------------------------------- #
 def load_commitments() -> list:
-    items = read_json(COMMITMENTS, [])
+    items = read_json(_path("commitments.json"), [])
     return items if isinstance(items, list) else []
 
 
@@ -275,7 +288,7 @@ def add_commitment(text: str, due_str: str | None = None, source: str = "manual"
         if kind == "plain":
             _attach_estimate(rec, due, est_str, bucket)
         items.append(rec)
-        write_json(COMMITMENTS, items)
+        write_json(_path("commitments.json"), items)
         return rec
 
 
@@ -317,7 +330,7 @@ def resolve_commitment(commitment_id: str, status: str = "done"):
                 c["status"] = status
                 hit = c
         if hit is not None:
-            write_json(COMMITMENTS, items)
+            write_json(_path("commitments.json"), items)
     if hit is not None and was_open and status == "done":
         _close_estimate(hit)
     return dict(hit) if hit is not None else None
@@ -356,7 +369,7 @@ def close_awaiting_detailed(status: str = "answered") -> list:
                 c["status"] = status
                 closed.append(dict(c))
         if closed:
-            write_json(COMMITMENTS, items)
+            write_json(_path("commitments.json"), items)
         return closed
 
 
@@ -559,12 +572,12 @@ def refresh_menubar() -> None:
 # Session ledger (the dual-clock log)
 # --------------------------------------------------------------------------- #
 def load_ledger() -> list:
-    rows = read_json(LEDGER, [])
+    rows = read_json(_path("session-ledger.json"), [])
     return rows if isinstance(rows, list) else []
 
 
 def _save_ledger(rows) -> None:
-    write_json(LEDGER, rows)
+    write_json(_path("session-ledger.json"), rows)
 
 
 def start_session(session_id: str, source: str = "startup", transcript_path: str | None = None):

@@ -442,6 +442,59 @@ class TestCore(unittest.TestCase):
         self.assertEqual(seed_after["status"], "answered")
 
 
+class TestCallTimePaths(unittest.TestCase):
+    """Regression for incident #6 (live data/ wipe): a caller that repoints
+    core.DATA alone -- WITHOUT also repointing the sibling COMMITMENTS/
+    LEDGER/BIRTH constants -- must still have every internal read/write
+    land inside the new DATA. Before the call-time-derivation fix, these
+    functions read the bare stale constants directly, so a test/caller
+    that forgot a sibling would silently hit whatever those constants were
+    still bound to (in production, the LIVE files).
+
+    Deliberately leaves core.COMMITMENTS/LEDGER/BIRTH pointed at a SECOND,
+    distinct sentinel tempdir instead of restoring them to DATA -- if any
+    internal code still trusts the bare constant, its write lands in the
+    sentinel dir, which this test asserts stays completely empty."""
+
+    def setUp(self):
+        self.tmp_data = tempfile.TemporaryDirectory()
+        self.tmp_sentinel = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self.tmp_data.name)
+        self.sentinel_dir = Path(self.tmp_sentinel.name)
+        self._orig = (core.DATA, core.COMMITMENTS, core.LEDGER, core.BIRTH, core.WEIGHTS)
+        core.DATA = self.data_dir  # repointed
+        # NOT repointed to data_dir -- left aimed at the sentinel, on purpose.
+        core.COMMITMENTS = self.sentinel_dir / "commitments.json"
+        core.LEDGER = self.sentinel_dir / "session-ledger.json"
+        core.BIRTH = self.sentinel_dir / "birth.json"
+        core.WEIGHTS = self.sentinel_dir / "memory-weights.json"
+
+    def tearDown(self):
+        (core.DATA, core.COMMITMENTS, core.LEDGER, core.BIRTH, core.WEIGHTS) = self._orig
+        self.tmp_data.cleanup()
+        self.tmp_sentinel.cleanup()
+
+    def test_birth_commitment_writes_follow_data_not_stale_siblings(self):
+        core.get_or_create_birth()
+        rec = core.add_commitment("water the plants", "+0m")
+        core.resolve_commitment(rec["id"], status="done")
+
+        # 1) The writes actually happened, in the repointed DATA.
+        self.assertTrue((self.data_dir / "birth.json").exists())
+        commitments_path = self.data_dir / "commitments.json"
+        self.assertTrue(commitments_path.exists())
+        saved = json.loads(commitments_path.read_text())
+        self.assertEqual(saved[0]["id"], rec["id"])
+        self.assertEqual(saved[0]["status"], "done")
+
+        # 2) The stale sentinel paths were NEVER created -- proof nothing
+        # internal fell back to the bare COMMITMENTS/BIRTH constants.
+        self.assertEqual(list(self.sentinel_dir.iterdir()), [],
+                         "a write landed at a stale sibling-constant path "
+                         "instead of the repointed DATA -- this is the "
+                         "incident #6 wipe-class bug")
+
+
 class TestWatcherLadder(unittest.TestCase):
     def _c(self, minutes_past_due, kind="awaiting-reply"):
         now = core.now_utc()
@@ -4762,5 +4815,64 @@ class TestSessionRouting(unittest.TestCase):
                 self._unstub(orig)
 
 
+def _fingerprint_live_data():
+    """Read-only {relative_path: size_bytes} snapshot of the LIVE data/ dir
+    (derived fresh, never through core.DATA -- a test may have repointed
+    that). Guard-only; never called from test code."""
+    live_dir = Path(__file__).resolve().parent.parent / "data"
+    snap = {}
+    if live_dir.is_dir():
+        for p in live_dir.rglob("*"):
+            if p.is_file():
+                try:
+                    snap[str(p.relative_to(live_dir))] = p.stat().st_size
+                except OSError:
+                    pass
+    return snap
+
+
+# Files whose SHRINKING (not just growing -- a live watcher legitimately
+# appends/grows these) signals damage, not benign concurrent churn.
+_GUARD_SHRINK_WATCH = {
+    "commitments.json", "habits.jsonl", "session-ledger.json",
+    "notified.json", "birth.json",
+}
+
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    try:
+        _before = _fingerprint_live_data()
+    except Exception as _exc:
+        print(f"[data-guard] pre-run fingerprint failed ({_exc}) -- "
+              f"guard DISABLED this run, fail-open.")
+        _before = None
+
+    _prog = unittest.main(verbosity=2, exit=False)
+
+    _damaged = []
+    if _before is not None:
+        try:
+            _after = _fingerprint_live_data()
+            for _name, _size in _before.items():
+                if _name not in _after:
+                    _damaged.append(f"DELETED: data/{_name} (was {_size}b)")
+                elif _name in _GUARD_SHRINK_WATCH and _after[_name] < _size:
+                    _damaged.append(
+                        f"SHRANK: data/{_name} ({_size}b -> {_after[_name]}b)")
+        except Exception as _exc:
+            print(f"[data-guard] post-run fingerprint failed ({_exc}) -- "
+                  f"guard could not verify, fail-open.")
+
+    if _damaged:
+        banner = "!" * 78
+        print("\n" + banner)
+        print("CRITICAL: live data/ was damaged during this test run")
+        print(banner)
+        for _line in _damaged:
+            print(f"  - {_line}")
+        print(banner)
+        print("The suite must NEVER delete or shrink live data/ files.")
+        print("Test results above are NOT trustworthy -- investigate now.")
+        print(banner + "\n")
+        sys.exit(2)
+
+    sys.exit(0 if _prog.result.wasSuccessful() else 1)

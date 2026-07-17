@@ -38,6 +38,9 @@ UNSEEN_OFFSETS = (600, 1200, 3000)   # 10/20/50 min of not-seeing-the-chat
 ELSEWHERE_WEIGHT = 0.5               # two busy minutes = one absent minute
 WALL_CEILING_S = 5400                # 90 min: final rung fires regardless
 CYCLE_S = 600
+# deprecated import-time bindings — kept only so existing test repoint
+# tuples stay valid; nothing internal reads PRESENCE_FILE/NOTIFIED/
+# NOTIFY_TXT anymore, all derive core.DATA / "<name>" at call time.
 PRESENCE_FILE = core.DATA / "presence.json"
 WELCOME_MIN_AWAY_S = 1200   # 20 min: a shorter return is a glance, not a departure
 
@@ -557,7 +560,11 @@ def desktop_notify(title: str, message: str) -> bool:
     # and argument-free. Fall back to raw osascript if the applet is missing.
     if NOTIFIER_APP.exists():
         try:
-            NOTIFY_TXT.write_text(f"{title}\n{message}", encoding="utf-8")
+            # core.DATA at call time, not the stale import-time NOTIFY_TXT
+            # constant -- see the presence.json comment on record_presence()
+            # below for why (incident #6: a test that repoints core.DATA
+            # alone must not still hit the live file here).
+            (core.DATA / "notify.txt").write_text(f"{title}\n{message}", encoding="utf-8")
             r = subprocess.run(["/usr/bin/open", "-g", "-a", str(NOTIFIER_APP)],
                                timeout=10, capture_output=True, text=True)
             if r.returncode == 0:
@@ -757,7 +764,9 @@ def run_cycle(force: bool = False) -> None:
                                          "front": snap["front_app"]})
             except Exception:
                 pass
-    notified = core.read_json(NOTIFIED, {})
+    # core.DATA at call time, not the stale import-time NOTIFIED constant
+    # (incident #6 shape -- see record_presence()'s comment above).
+    notified = core.read_json(core.DATA / "notified.json", {})
     if not isinstance(notified, dict):
         notified = {}
     dirty = False
@@ -1009,7 +1018,7 @@ def run_cycle(force: bool = False) -> None:
     if _sweep_notified(notified, open_ids, now):
         dirty = True
     if dirty:
-        core.write_json(NOTIFIED, notified)
+        core.write_json(core.DATA / "notified.json", notified)
     if state_changed or dirty:
         core.refresh_menubar()
 
