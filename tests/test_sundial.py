@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 LIB = Path(__file__).resolve().parent.parent / "lib"
@@ -3588,6 +3588,48 @@ class TestWallTimeGuard(unittest.TestCase):
         core_mod.LEDGER = old_data / "session-ledger.json"
         core_mod.BIRTH = old_data / "birth.json"
         core_mod.WEIGHTS = old_data / "memory-weights.json"
+
+
+class TestSnooze(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.data = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_snooze_active_true_within_window(self):
+        import watcher as w
+        now = datetime.now(timezone.utc)
+        (self.data / "snooze.json").write_text(json.dumps(
+            {"until": (now + timedelta(minutes=30)).isoformat(),
+             "set_at": now.isoformat()}))
+        self.assertTrue(w.snooze_active(now, data_dir=self.data))
+
+    def test_snooze_active_false_when_expired(self):
+        import watcher as w
+        now = datetime.now(timezone.utc)
+        (self.data / "snooze.json").write_text(json.dumps(
+            {"until": (now - timedelta(minutes=1)).isoformat(),
+             "set_at": now.isoformat()}))
+        self.assertFalse(w.snooze_active(now, data_dir=self.data))
+
+    def test_snooze_active_false_no_file_or_garbage(self):
+        import watcher as w
+        now = datetime.now(timezone.utc)
+        self.assertFalse(w.snooze_active(now, data_dir=self.data))
+        (self.data / "snooze.json").write_text("{not json")
+        self.assertFalse(w.snooze_active(now, data_dir=self.data))
+
+    def test_breakthrough_filter_keeps_high_tier_ceiling_only(self):
+        import watcher as w
+        # batch entries are (commitment, entry, rung, message, ceiling)
+        # policy.tier_of reads the "weight" field (see lib/policy.py), not "tier".
+        high_ceiling = ({"id": "a", "weight": "high"}, {}, 3, "m", True)
+        high_no_ceiling = ({"id": "b", "weight": "high"}, {}, 1, "m", False)
+        norm_ceiling = ({"id": "c", "weight": "normal"}, {}, 3, "m", True)
+        kept = w.snooze_filter([high_ceiling, high_no_ceiling, norm_ceiling])
+        self.assertEqual([b[0]["id"] for b in kept], ["a"])
 
 
 if __name__ == "__main__":

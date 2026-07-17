@@ -533,6 +533,25 @@ def speak_final(message: str, audible=True, force=False) -> None:
         pass
 
 
+def snooze_active(now, data_dir=None) -> bool:
+    """Owner-declared quiet window (data/snooze.json). Fail-safe: missing,
+    malformed, or expired file means not snoozed."""
+    try:
+        d = Path(data_dir) if data_dir is not None else core.DATA
+        s = core.read_json(d / "snooze.json", None)
+        until = core.parse_iso(s.get("until")) if isinstance(s, dict) else None
+        return until is not None and now < until
+    except Exception:
+        return False
+
+
+def snooze_filter(batch):
+    """During snooze only a HIGH-tier commitment past its wall ceiling may
+    deliver -- the owner's word holds everything else. Same breakthrough
+    shape as the ceiling honesty rail."""
+    return [b for b in batch if b[4] and policy.tier_of(b[0]) == "high"]
+
+
 def desktop_notify(title: str, message: str) -> bool:
     # Prefer the compiled applet: macOS attributes its notifications to
     # "Sundial" instead of Script Editor. The applet reads title (line 1)
@@ -647,6 +666,7 @@ def run_cycle(force: bool = False) -> None:
     audible = sound_allowed(snap["state"], {"state": snap["state"],
         "since": (prev.get("since") if prev.get("state") == snap["state"]
                   else now.isoformat())}, now)
+    snoozed = snooze_active(now)
     returned = (prev.get("state") == "away"
                 and snap["state"] in ("here", "elsewhere"))
     away_since = core.parse_iso(prev.get("since")) if returned else None
@@ -690,7 +710,7 @@ def run_cycle(force: bool = False) -> None:
                 accrue(entry, state, now, created, ripe=was_ripe)
                 notified[c["id"]] = entry
                 dirty = True
-            if returned and c.get("kind") == "awaiting-reply":
+            if returned and not snoozed and c.get("kind") == "awaiting-reply":
                 ripe = ripe_rung(c, entry, now, snap["state"])
                 if ripe >= 1 and ripe > entry.get("count", 0):
                     msg = pick_message(c.get("id", ""), RETURN_POOL,
@@ -727,6 +747,12 @@ def run_cycle(force: bool = False) -> None:
             still_open = {x.get("id") for x in core.load_commitments()
                           if x.get("status") == "open"}
             batch = [b for b in batch if b[0].get("id") in still_open]
+        if snoozed:
+            held = len(batch)
+            batch = snooze_filter(batch)
+            if held - len(batch) > 0:
+                opportunities.log_habit({"kind": "snooze-hold",
+                                         "held": held - len(batch)})
         fire_now = core.now_utc()
         for c, entry, rung, message, _ceiling in batch:
             try:
@@ -826,10 +852,11 @@ def run_cycle(force: bool = False) -> None:
             rec = opportunities.add_opportunity(kind, evidence, msg, expiry)
             if (rec and not stale and opportunities.offer_allowed(today)
                     and not opportunities.kind_suppressed(kind)):
-                desktop_notify("Sundial", msg)
-                chime("return", state, audible)
-                opportunities.count_offer(today)
-                state_changed = True
+                if not snoozed:
+                    desktop_notify("Sundial", msg)
+                    chime("return", state, audible)
+                    opportunities.count_offer(today)
+                    state_changed = True
             if rec:
                 habit = {"kind": "offer", "opp": kind, "app": evt.get("app")}
                 if stale:
@@ -856,10 +883,11 @@ def run_cycle(force: bool = False) -> None:
                 (now + timedelta(seconds=3600)).isoformat())
             if (rec and opportunities.offer_allowed(today)
                     and not opportunities.kind_suppressed("build-finished")):
-                desktop_notify("Sundial", msg)
-                chime("return", state, audible)
-                opportunities.count_offer(today)
-                state_changed = True
+                if not snoozed:
+                    desktop_notify("Sundial", msg)
+                    chime("return", state, audible)
+                    opportunities.count_offer(today)
+                    state_changed = True
             if rec:
                 opportunities.log_habit({"kind": "offer",
                                          "opp": "build-finished", "cmd": cmd})
