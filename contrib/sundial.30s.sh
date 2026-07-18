@@ -32,8 +32,7 @@ try:
         state = json.load(f).get("state")
 except Exception:
     state = None
-symbols = {"here": "◉", "elsewhere": "◎", "away": "○"}
-print(symbols.get(state, "∅") + "|" + (state or "unknown"))
+print(state or "unknown")
 ' 2>/dev/null
 }
 
@@ -68,27 +67,36 @@ print(n)
 ' 2>/dev/null
 }
 
-IFS='|' read -r PRESENCE_SYM PRESENCE_WORD <<< "$(presence_info)"
+PRESENCE_WORD="$(presence_info)"
+# Native menu-bar presence: a FLAT dot in Apple's exact system colors, not a
+# glossy emoji (which ignores the bar's monochrome/adaptive style). Filled =
+# present, hollow ring = away/unknown.
+case "$PRESENCE_WORD" in
+    here)      PRESENCE_SYM="●"; PRESENCE_COLOR="#34C759" ;;  # system green
+    elsewhere) PRESENCE_SYM="●"; PRESENCE_COLOR="#FF9500" ;;  # system orange
+    away)      PRESENCE_SYM="○"; PRESENCE_COLOR="#8E8E93" ;;  # system gray
+    *)         PRESENCE_SYM="○"; PRESENCE_COLOR="#8E8E93" ;;
+esac
 OPEN_COUNT="$(open_asks_count)"
 OFFER_COUNT="$(offers_count)"
 
 # If a read came back truly empty (python3 missing, hard crash), degrade
 # the whole bar to the bare sun glyph rather than show broken/partial text.
 if [ -z "$PRESENCE_SYM" ] || [ -z "$OPEN_COUNT" ] || [ -z "$OFFER_COUNT" ]; then
-    echo "☉ | image=${LOGO_B64}"
+    echo "○ | image=${LOGO_B64}"
     exit 0
 fi
 
 # --- menu bar line -----------------------------------------------------
 
-LINE="☉ ${PRESENCE_SYM}"
+LINE="${PRESENCE_SYM}"
 if [ "$OPEN_COUNT" -gt 0 ] 2>/dev/null; then
     LINE="${LINE} ${OPEN_COUNT}⏳"
 fi
 if [ "$OFFER_COUNT" -gt 0 ] 2>/dev/null; then
     LINE="${LINE} ${OFFER_COUNT}✋"
 fi
-echo "$LINE | image=${LOGO_B64}"
+echo "$LINE | color=${PRESENCE_COLOR} image=${LOGO_B64}"
 
 # --- dropdown ------------------------------------------------------------
 
@@ -202,7 +210,7 @@ except Exception:
 }
 
 echo "---"
-echo "Presence: ${PRESENCE_WORD}"
+echo "${PRESENCE_SYM} Presence: ${PRESENCE_WORD} | color=${PRESENCE_COLOR}"
 SNOOZE_LINE="$(snooze_line)"
 [ -n "$SNOOZE_LINE" ] && echo "$SNOOZE_LINE"
 QUEUED_LINE="$(queued_line)"
