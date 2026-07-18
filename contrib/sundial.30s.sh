@@ -1,17 +1,19 @@
 #!/bin/bash
 LOGO_B64="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"
 # <bitbar.title>Sundial</bitbar.title>
-# <bitbar.version>v1.0</bitbar.version>
-# <bitbar.desc>One-glance Sundial status: presence, open asks, offers.</bitbar.desc>
-# <bitbar.abouturl>https://github.com/</bitbar.abouturl>
+# <bitbar.version>v1.3</bitbar.version>
+# <bitbar.desc>One-glance Sundial status: presence, open asks & offers, and your own estimate / at-risk timing.</bitbar.desc>
+# <bitbar.author>J. Servo</bitbar.author>
+# <bitbar.abouturl>https://github.com/bigjoe-oti/sundial</bitbar.abouturl>
 #
 # SwiftBar menu-bar face for Sundial. Read-only: never writes to data/,
 # never signals the watcher. Refreshes every 30s (see filename).
 #
-# Install: SYMLINK this file into your SwiftBar plugin folder -- it resolves
-# its own real location and finds the project from there (contrib/..), so one
-# tracked copy serves both git and the menu bar. A plain copied file falls
-# back to $HOME/sundial; either way an exported SUNDIAL_HOME wins.
+# Install: COPY this file into your SwiftBar plugin folder as a REAL file --
+# NOT a symlink. SwiftBar does not re-run symlinked plugins on schedule; it
+# executes one once and then freezes it (a stale menu bar). Point it at your
+# install by exporting SUNDIAL_HOME or editing the fallback path below, and
+# re-copy after edits.
 
 _SELF="$(readlink "$0" 2>/dev/null || echo "$0")"
 _ROOT="$(cd "$(dirname "$_SELF")/.." 2>/dev/null && pwd)"
