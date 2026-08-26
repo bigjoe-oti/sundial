@@ -29,6 +29,19 @@
 #   speak.txt           voice name (or empty) to speak the final rung aloud
 set -euo pipefail
 
+# 0. Platform target: macos (default, full installer) | hermes (hook+tick
+#    wiring only — no applet, no launchd) | linux (delegated to setup-linux.sh).
+#    Parsed FIRST so it composes with the flag loop below.
+PLATFORM="macos"
+REST=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --platform) PLATFORM="$2"; shift 2 ;;
+    *) REST+=("$1"); shift ;;
+  esac
+done
+if [[ ${#REST[@]} -gt 0 ]]; then set -- "${REST[@]}"; else set -- ; fi
+
 NAME="Friend"
 MEMORY_DIR="$HOME/.claude/projects/-Users-$USER/memory"
 FRESH=0
@@ -51,10 +64,34 @@ done
 
 echo "== Sundial setup =="
 
+if [[ "$PLATFORM" == "linux" ]]; then
+  echo "[setup] linux target: delegating to setup-linux.sh..."
+  exec bash "$(dirname "$0")/setup-linux.sh" "$@"
+fi
+
+if [[ "$PLATFORM" == "hermes" ]]; then
+  echo "[setup] hermes target: hook + tick wiring only (no applet, no launchd)."
+  PROJ="$(cd "$(dirname "$0")" && pwd)"
+  command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found" >&2; exit 1; }
+  cat <<HERMES
+
+Hermes integration checklist (see docs/integrations/hermes.md):
+  1. Session start / per-prompt injection:
+       python3 $PROJ/bin/sundial-hermes-hook <<< '{"event":"session_start"}'
+       echo '{"event":"prompt_submit","prompt":"..."}' | \\
+         python3 $PROJ/bin/sundial-hermes-hook
+  2. Cron tick (exactly ONE driver — verify no launchd plist and no other
+     sundial cron job exists before registering a 10m watcher tick).
+  3. Export SUNDIAL_TZ (default UTC) and SUNDIAL_MEMORY_DIR for your profile.
+  4. Run 'sundial doctor' to verify the whole chain.
+HERMES
+  exit 0
+fi
+
 # 1. Guards: macOS + required tools.
 echo "[1/8] checking platform and required tools..."
 if [[ "$(uname)" != "Darwin" ]]; then
-  echo "ERROR: Sundial is macOS-only (needs osascript/launchd)." >&2
+  echo "ERROR: Sundial is macOS-only (needs osascript/launchd). Use --platform hermes or linux." >&2
   exit 1
 fi
 for bin in python3 osacompile launchctl; do
