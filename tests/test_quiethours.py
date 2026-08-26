@@ -2,7 +2,6 @@
 fail-open (insufficient data -> no quiet hours -> current behavior)."""
 
 import importlib.util
-import json
 import sys
 import tempfile
 import unittest

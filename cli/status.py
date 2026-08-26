@@ -91,8 +91,7 @@ def build_status(data) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Read-only status snapshot.")
-    ap.add_argument("--json", action="store_true")
-    args = ap.parse_args()
+    ap.parse_args()
     status = build_status(core.DATA)
     print(json.dumps(status, ensure_ascii=False))
 

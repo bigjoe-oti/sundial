@@ -7,7 +7,6 @@ degrades gracefully: doctor must never be the thing that crashes.
 
 import argparse
 import json
-import subprocess
 import sys
 from pathlib import Path
 

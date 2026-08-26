@@ -3797,7 +3797,7 @@ class TestWallTimeGuard(unittest.TestCase):
         p = self.data / "habits.jsonl"
         if not p.exists():
             return []
-        return [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+        return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
 
     def test_outlier_ratio_recorded_null_with_note(self):
         # actual 21x the estimate -> ratio must be None, note must explain

@@ -4,10 +4,8 @@ instantiation. The None-softening rule is pinned at the contract level:
 every PresenceBackend sensor method MAY return None and callers must treat
 None as 'sensor unavailable — soften, never block'."""
 
-import io
 import sys
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent

@@ -5,7 +5,6 @@ Pins: accumulation across sequential writes; malformed input ignored
 (never fabricated); estimator still calibrates from ledger+habits data.
 """
 
-import importlib.util
 import json
 import subprocess
 import sys

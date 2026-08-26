@@ -9,7 +9,6 @@ Checks (each independently reported; hard failures vs soft warnings):
 Exit 0 unless a HARD failure; warnings listed but non-fatal.
 """
 
-import argparse
 import json
 import subprocess
 import sys
