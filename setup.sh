@@ -155,6 +155,17 @@ echo "  -> NOTE: macOS will show a one-time permission prompt for Sundial — cl
 echo "[6/8] installing the launchd watcher..."
 PLIST="$HOME/Library/LaunchAgents/com.sundial.watcher.plist"
 PY_BIN="$(command -v python3)"
+# launchd stdio MUST live outside the project tree. If $PROJ is under a
+# TCC-protected location (~/Desktop, ~/Documents, ~/Downloads), macOS stamps
+# every file created there with a `com.apple.macl` xattr recording the creating
+# process's TCC identity. launchd can then no longer open that file once the
+# identity stops matching — which happens at reboot — and the job dies with
+# EX_CONFIG (78) before the program ever runs, leaving an EMPTY log and no other
+# symptom. Deleting the log "fixes" it only until the next restart.
+# Verified 2026-07-21: /bin/echo -> a fresh file in $PROJ/data exits 0, while
+# /bin/echo -> the macl-stamped watcher.log in the SAME directory exits 78.
+LOG_DIR="$HOME/Library/Logs/sundial"
+mkdir -p "$LOG_DIR"
 cat > "$PLIST" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -172,9 +183,9 @@ cat > "$PLIST" <<PLISTEOF
   <key>RunAtLoad</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>$PROJ/data/watcher.log</string>
+  <string>$LOG_DIR/watcher.log</string>
   <key>StandardErrorPath</key>
-  <string>$PROJ/data/watcher.log</string>
+  <string>$LOG_DIR/watcher.log</string>
 </dict>
 </plist>
 PLISTEOF
