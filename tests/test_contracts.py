@@ -14,14 +14,24 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def _load(name):
-    """Import a repo-top-level module without polluting global sys.path."""
-    import importlib
-    saved = sys.path[:]
-    try:
-        sys.path.insert(0, str(REPO))
-        return importlib.import_module(name)
-    finally:
-        sys.path = saved
+    """Load a repo module under a UNIQUE name via file location.
+
+    Why not plain import: lib/core.py is imported as top-level 'core' by
+    sibling tests that prepend lib/ to sys.path, shadowing the core/
+    package ('core' is not a package). File-location loading is immune to
+    sys.path ordering — the same technique runtime consumers of the
+    contracts must use until a future version unifies the namespace.
+    """
+    import importlib.util
+    target = REPO / (name.replace(".", "/") + ".py")
+    unique = "sundial_v3_" + name.replace(".", "_")
+    if unique in sys.modules:
+        return sys.modules[unique]
+    spec = importlib.util.spec_from_file_location(unique, target)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[unique] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 
 class TestPresenceBackendContract(unittest.TestCase):
