@@ -21,5 +21,7 @@ case "$cmd" in
   estimate) exec python3 "$ROOT/cli/estimate.py" "$@" ;;
   snooze)   exec python3 "$ROOT/cli/snooze.py" "$@" ;;
   tick)     exec python3 "$ROOT/cli/tick.py" "$@" ;;
-  *) echo "usage: sundial {now|remember|due|done|ask|answered|decline|allow|owner|estimate|snooze|tick} [...]" >&2; exit 1 ;;
+  status)   exec python3 "$ROOT/cli/status.py" "$@" ;;
+  doctor)   exec python3 "$ROOT/cli/doctor.py" "$@" ;;
+  *) echo "usage: sundial {now|remember|due|done|ask|answered|decline|allow|owner|estimate|snooze|tick|status|doctor} [...]" >&2; exit 1 ;;
 esac
