@@ -195,7 +195,11 @@ def sample_presence() -> dict:
     A locked screen is the hardest 'away' signal there is and dominates the
     idle/front-app heuristic outright: a lidless, humming Mac kept idle time
     low with background work can otherwise read as 'present' across a long
-    absence -- lock cannot be fooled that way."""
+    absence -- lock cannot be fooled that way.
+
+    v3: sensors flow through the MacOSBackend delegation shell (which calls
+    back into this same presence module — one copy of every command). The
+    seam behavior is byte-identical; see core/backends_impl/macos.py."""
     idle = presence.idle_seconds()
     front = presence.front_app() if idle is not None else None
     state = presence.derive_state(idle, front, presence.cli_apps(core.DATA))
