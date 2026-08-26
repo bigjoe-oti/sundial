@@ -14,6 +14,30 @@ politely, greets you when you return — and if you never come back, the agent
 proceeds on its own stated judgment or stands down. Deterministically. With
 zero model calls.
 
+## v3 — one core, many agents
+
+As of v3, Sundial is no longer bound to one runtime or one OS:
+
+| Layer | Contract | Implementations |
+|---|---|---|
+| Presence sensing | `core.backends.PresenceBackend` | macOS (ioreg/lsappinfo/pmset), Linux (xprintidle/loginctl/xdotool), headless (no sensors — wall ceilings only) |
+| Delivery | `core.backends.NotifyBackend` | macOS applet + chimes + speech, Linux notify-send, webhook (`SUNDIAL_WEBHOOK_URL`) |
+| Agent wiring | `core.adapters.AgentAdapter` | Claude Code hooks, Hermes (`bin/sundial-hermes-hook`), generic stdin/stdout protocol |
+
+The **generic hook protocol** is the portability contract: JSON in,
+context block out, exit 0 always — any runtime that can exec a program can
+wear the clock (see `docs/superpowers/specs/2026-08-26-universal-backend-design.md`).
+Select a backend explicitly with `SUNDIAL_BACKEND=macos|linux|headless`,
+or let the platform probe choose.
+
+**Honesty rails, unchanged and test-pinned:** no LLM anywhere in the wake
+path; ≤3 pings per question per driver; sensors returning `None` soften,
+never block; memory decay computed, never enacted.
+
+**Developer hygiene:** lint-clean under Ruff (`E/F/W`, config in
+`pyproject.toml`); every subsystem behavior change requires golden-file
+parity proof before merge.
+
 ## What it does
 
 - **Gives the agent a clock.** A session-start hook injects local time, the

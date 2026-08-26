@@ -2,11 +2,21 @@
 
 Three actors, strictly separated. The separation *is* the design.
 
+**v3 layering (2026):** platform sensing and delivery now sit behind the
+`core.backends` contracts (`PresenceBackend`, `NotifyBackend`), and agent
+wiring behind `core.adapters.AgentAdapter`. The engine (`lib/core.py`) is
+untouched by this layering — incident-hardened code does not move; it gets
+wrapped. Backend selection: `SUNDIAL_BACKEND` env override, else platform
+probe. See `docs/superpowers/specs/2026-08-26-universal-backend-design.md`.
+
 ```
-┌─ SENSORS (zero-permission macOS reads) ──────────────────────────┐
-│ HIDIdleTime · frontmost app name · pmset power assertions        │
-│ (incl. WebRTC call detection) · screen-lock state · vnstat       │
-│ network rates (optional)                                         │
+┌─ SENSORS (zero-permission OS reads, per backend) ───────────────┐
+│ macos:    HIDIdleTime · frontmost app name · pmset assertions   │
+│           (incl. WebRTC) · screen-lock state                    │
+│ linux:    xprintidle · loginctl LockedHint · xdotool (best-     │
+│           effort — every miss returns None)                     │
+│ headless: none by definition — wall ceilings drive everything   │
+│ ANY None softens, never blocks (honesty rail, test-pinned)      │
 └──────────────┬───────────────────────────────────────────────────┘
                ▼
 ┌─ THE WATCHER (launchd, every 10 min, pure Python, NO LLM) ───────┐
