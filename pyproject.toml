@@ -10,8 +10,8 @@ line-length = 88
 target-version = "py39"
 
 [tool.ruff.lint]
-select = ["E", "F", "W"]  # pycodestyle, pyflakes — strict but simple
-ignore = []
+select = ["E", "F", "W"]
+ignore = ["E501"]  # long human-facing message pools & test literals; wrapping them harms grep-ability
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -11,7 +11,8 @@ import core  # noqa: E402
 
 def main():
     ap = argparse.ArgumentParser(description="Disarm awaiting-reply nudges.")
-    ap.add_argument("--quiet", action="store_true", help="hook mode: silent, always exit 0")
+    ap.add_argument("--quiet", action="store_true",
+                    help="hook mode: silent, always exit 0")
     args = ap.parse_args()
 
     try:
