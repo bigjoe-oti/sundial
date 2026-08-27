@@ -1,285 +1,264 @@
-# Sundial
+<p align="center">
+  <img src="assets/sundial-logo.png" width="180" alt="Sundial Logo">
+</p>
 
-<p align="center"><img src="assets/sundial-logo.png" width="180"></p>
+<h1 align="center">Sundial</h1>
+<p align="center">
+  <b>A sense of time for AI agents. Local-first, zero-dependency, no LLM in the loop.</b>
+</p>
 
-**A sense of time for AI agents. Local-first, zero-dependency, no LLM in the loop.**
-
-> Sundial measures **absence, not time.**
-
-Your coding agent asks you a question and you walk away. Today, nothing
-happens — the session hangs, the question rots, the work stalls. Sundial is
-the missing half of human-in-the-loop: when the human is the blocker, the
-agent's clock keeps running. It nudges you on your desktop, escalates
-politely, greets you when you return — and if you never come back, the agent
-proceeds on its own stated judgment or stands down. Deterministically. With
-zero model calls.
-
-## v3 — one core, many agents
-
-As of v3, Sundial is no longer bound to one runtime or one OS:
-
-| Layer | Contract | Implementations |
-|---|---|---|
-| Presence sensing | `core.backends.PresenceBackend` | macOS (ioreg/lsappinfo/pmset), Linux (xprintidle/loginctl/xdotool), headless (no sensors — wall ceilings only) |
-| Delivery | `core.backends.NotifyBackend` | macOS applet + chimes + speech, Linux notify-send, webhook (`SUNDIAL_WEBHOOK_URL`) |
-| Agent wiring | `core.adapters.AgentAdapter` | Claude Code hooks, Hermes (`bin/sundial-hermes-hook`), generic stdin/stdout protocol |
-
-The **generic hook protocol** is the portability contract: JSON in,
-context block out, exit 0 always — any runtime that can exec a program can
-wear the clock (see `docs/superpowers/specs/2026-08-26-universal-backend-design.md`).
-Select a backend explicitly with `SUNDIAL_BACKEND=macos|linux|headless`,
-or let the platform probe choose.
-
-**Honesty rails, unchanged and test-pinned:** no LLM anywhere in the wake
-path; ≤3 pings per question per driver; sensors returning `None` soften,
-never block; memory decay computed, never enacted.
-
-**Developer hygiene:** lint-clean under Ruff (`E/F/W`, config in
-`pyproject.toml`); every subsystem behavior change requires golden-file
-parity proof before merge.
-
-## What it does
-
-- **Gives the agent a clock.** A session-start hook injects local time, the
-  agent's age, time since you last spoke, and any ripened commitments. A
-  per-prompt hook adds "now + elapsed since your previous prompt" to every
-  message you send.
-- **Keeps a promise ledger.** `sundial ask "should the header be sticky?"`
-  records a time-stamped *awaiting-reply* commitment. Any prompt you type
-  disarms it — the system's whole goal is your attention, and typing proves
-  it has it.
-- **Escalates through absence.** A launchd watcher (pure Python, no LLM,
-  runs every 10 minutes even with no session open) climbs an urgency-tiered
-  ladder — but the ladder's clock **only advances while you genuinely
-  haven't seen the chat**:
-
-```
-            you ask ──► 10 min unseen ──► 20 min ──► 50 min ──► agent decides
-  presence:   HERE ▸ clock paused (you can see the chat — silence means "not now")
-         ELSEWHERE ▸ half speed  (you're in another app — popups may name it)
-              AWAY ▸ full speed  (nobody's home — sound travels farther than pixels)
-  backstop: a wall ceiling forces the final rung, whatever the sensors say
-```
-
-  The cadence above is the **normal** tier. Tag a question's urgency with
-  `--weight`: **high** climbs faster (5/10/20 min, 40-min ceiling, speaks its
-  final rung), **low** slower and shorter (two rungs, 3-hour ceiling). Every
-  tier's terminal rung still states the autonomy contract; none of them ever
-  claims an elapsed time it didn't wait.
-
-- **Waits for the pause, not the tick.** A ripe nudge doesn't fire
-  mid-keystroke: it holds up to 3 minutes for you to pause typing or switch
-  apps, then delivers into that natural gap. Bounded deferral, straight from
-  the interruption-science literature — every fired nudge records how long
-  it politely waited.
-- **Knows away from busy from listening.** Two zero-permission macOS signals:
-  seconds since your last keystroke (`HIDIdleTime`) and the frontmost app
-  *name* (`lsappinfo`). In another app, the nudge may tease you by name:
-  *"I can see Figma has you. One opinion and I'll vanish."*
-- **Greets your return.** One welcome-back popup when you come back with
-  something ripened — *"While you were away (25m): …"* — instead of a pile
-  of stale ones.
-- **Escalates in sound, too — with manners.** Tink → Glass → Hero chimes
-  rise with the rungs (Purr on return), whispered when you're merely busy,
-  silent when you're right here. Optionally, the final rung literally
-  speaks (`--speak`). Sound courtesy reads presence, not the clock: chimes
-  and speech mute entirely once the screen is locked or you've been away
-  30+ minutes — popups and detection keep running regardless.
-- **Ends in autonomy, not limbo.** The final rung's contract, printed on the
-  notification itself: *proceeding on my judgment or standing down.* The
-  agent reads both clocks — how long you were gone vs. how long you sat
-  there choosing silence — and interprets accordingly. Silence-while-present
-  is an answer; silence-while-absent is a void. They deserve different
-  responses. The final rung names the *specific* default it will take
-  (*"proceeding to back up then halt, or standing down"*), and the agent acts
-  on its own only when it's highly confident **and** the action is reversible
-  — anything destructive waits for your explicit yes.
-
-## Quickstart
-
-macOS + a hook-capable agent CLI (built for Claude Code) + Python 3.9+.
-
-```bash
-git clone https://github.com/bigjoe-oti/sundial ~/sundial
-cd ~/sundial && ./setup.sh --name YourName --fresh
-```
-
-`setup.sh` wires the hooks, compiles the notifier app, loads the launchd
-watcher, and gives your agent a birth certificate. `--fresh` matters: an
-agent's time-sense starts at *its* birth, not the previous owner's. Allow
-notifications for "Sundial" when macOS asks. Then, in a session, teach your
-agent the habit: when it asks you something blocking, it runs
-`sundial ask "<the question>"` — and the machinery above takes over.
-
-```
-sundial now                    # time, agent age, due count
-sundial ask "text" [--due +10m] [--weight low|normal|high]
-                   [--confidence 0..1] [--irreversible] [--default "what I'll do"]
-sundial due / answered / done <id>
-sundial remember "text" --due 2026-08-01
-```
-
-## What else it notices
-
-The watcher is already sampling presence every cycle — this puts that
-sampling to work, deterministically, no LLM in the loop:
-
-- **Meeting offers.** Zoom, Teams, FaceTime, Webex, Skype in the foreground —
-  or a live WebRTC call in *any* app, so Google Meet in a Chrome tab counts
-  too — triggers a one-time offer to draft minutes when it starts, and again
-  when it ends. A meeting that closed out long after it plausibly ran (the
-  machine slept through it) gets a softer, duration-free offer instead of a
-  made-up number.
-- **Folder curiosity, any depth.** Spotlight (`mdfind`) watches `~/Desktop`
-  (or your own `watch_roots.txt`) for new or recently-added folders *at any
-  depth*, not just top-level — capped at 5 per cycle so a bulk unzip doesn't
-  flood you. A folder that earns a mention self-enrolls as a new watch root,
-  so curiosity naturally follows you deeper into a project. No Spotlight?
-  It falls back to the original top-level poller.
-- **Build awareness.** Notices when a long-running `xcodebuild`, `npm`,
-  `pytest`, `cargo`, `docker`, `make`, or similar just finished (anything
-  under a minute is noise, not a build) and offers to look at the results.
-- **Manners: decline and allow.** `sundial decline <kind>` (e.g.
-  `meeting-start`, `curiosity`, `build-finished`) mutes that kind of offer
-  after 3 declines without you saying a word again; `sundial allow <kind>`
-  re-enables it. Declined kinds still get recorded to the ledger — just
-  never popped up.
-- **The Habit Ledger.** Every fire, mute, presence transition, and offer logs
-  one line to `data/habits.jsonl` (rotated at 5MB, pruned after 14 days once
-  terminal) — raw material for the Owner Model.
-- **The Owner Model.** `sundial owner` distills the Habit Ledger — no LLM,
-  just medians and percentiles — into active-stretch lengths, reply latency,
-  an hourly activity histogram, and offer/fire counts. Deterministic,
-  refreshed at most every 6 hours, meant for the agent to read before
-  writing a weekly reflection.
-- **Silent prep — flagged off by default.** When a meeting starts, Sundial
-  can quietly draft a minutes-of-meeting scaffold in the background (no
-  popup, no notification) so it's waiting on disk if you want it later. This
-  stays OFF until you opt in: create `data/prep_enabled` (touch the file) and
-  optionally cap it with `data/prep_budget.txt` (a bare integer, default 2/
-  day). It also needs a `claude` binary to hand the draft to — set
-  `SUNDIAL_CLAUDE_BIN` to its path, or have `claude` on your `PATH`; missing
-  either just skips the spawn (logged, never crashes).
-- **Manners, not spam.** At most 5 offers a day, deduped by evidence so the
-  same meeting, folder, or build never offers twice. Open offers also ride
-  along in the `<sundial>` / `<sundial-tick>` context blocks, so the agent
-  can act on one without you repeating yourself in chat.
-
-## Optional: a menu-bar face
-
-Want presence, open asks, and offers at a glance without opening a session?
-Install [SwiftBar](https://github.com/swiftbar/SwiftBar), copy
-`contrib/sundial.30s.sh` into its plugin folder, and set `SUNDIAL_HOME` to
-wherever you cloned this project — SwiftBar copies plugin scripts out of the
-repo, so the script can't find its own path and needs to be told. Read-only:
-it never writes to `data/` or signals the watcher.
-
-## Session voice
-
-Ripe fires can route into a claimed warm Claude session instead of a
-desktop popup — the session speaks them, time-situated ("came due 24
-minutes ago, while you were on the call"), instead of a template string.
-One channel per fire: a fresh claim takes rungs 1–2, and rung 3 always
-mirrors to both popup and session. Snooze, wall ceilings, and the
-per-tier ping caps all apply *before* this routing decision — the
-session channel can never receive a fire the desktop channel wouldn't,
-and rung accounting advances identically either way. A dead session
-stops refreshing its claim; the claim goes stale; popups resume exactly
-as before — nothing is ever left uncovered. Design:
-[docs/superpowers/specs/2026-07-17-session-voice-design.md](docs/superpowers/specs/2026-07-17-session-voice-design.md).
-
-## Honesty rails
-
-- **No LLM decides when to wake.** Ripeness is date arithmetic. (Research
-  agrees this is the right call — see prior art.)
-- **Nothing leaves the machine.** Notifications via a local compiled applet;
-  presence is an idle duration and an app *name* — never window titles,
-  never content. All state is plain JSON in `data/`, which is deliberately
-  git-ignored: live state is not history.
-- **The sensors can be wrong, so they only soften.** A per-tier wall ceiling
-  (40 min high / 90 normal / 3 h low) guarantees the final rung regardless of
-  what presence believes.
-- **Up to three pings per question, ever** (two for the low tier). No quiet hours — the watcher runs
-  every 10 minutes around the clock. What's gated is sound, not delivery:
-  chimes and speech mute when the screen is locked or you've been away 30+
-  minutes; popups and detection never sleep.
-- **Opportunity offers are capped and deduped too.** At most 5 a day, one
-  offer per real meeting or new folder — never a repeat nag over the same
-  evidence.
-- **Memory decay is computed, never enacted.** ACT-R-style scores over the
-  agent's memory files are recorded for future use; nothing auto-forgets.
-
-## Prior art, honestly mapped
-
-Time-injection into agent context is commodity (see
-[kadenn/chronos](https://github.com/kadenn/chronos), and Claude Code
-reminder hooks like
-[claude-code-reminder](https://github.com/JeremieSamson/claude-code-reminder),
-whose author explicitly notes it goes silent outside sessions — exactly
-where Sundial's watcher begins). Escalation-with-fallback exists cloud-side
-(HumanLayer; and [paperclip #4022](https://github.com/paperclipai/paperclip/issues/4022)
-proposes timeouts for agents stuck "waiting on human" — unshipped).
-[arXiv 2605.30152](https://arxiv.org/abs/2605.30152) shows LLM-free wake
-triggers beat LLM ones. The deepest prior art is Horvitz et al.'s
-**PRIORITIES** prototype (Microsoft Research, 1999), which already did
-presence-aware channel laddering — desktop→pager escalation timed by how
-long the user had been away.
-The mechanism under present-silence — sensor-gated delivery timing with a
-confidence measure, instead of elapsed-time firing — is also Horvitz-era
-prior art: "Attention-Sensitive Alerting" ([UAI 1999](https://arxiv.org/abs/1301.6707))
-framed it, and [US7,444,383](https://patents.google.com/patent/US7444383)
-(bounded deferral via local sensors, filed 2004) implemented it, decades
-before us. What we could not find is that mechanism applied to an agent
-gating its own self-initiated speech; a 2026 adversarial prior-art sweep
-([digest](docs/research/2026-07-17-temporal-scene-sweep.md)) is the current
-record of where each claim stands.
-Sundial stands on that lineage rather than
-beside it: what we could not find anywhere is this *combination* — the
-agent-blocked-on-human framing, local-first zero-dependency packaging, and
-a terminal autonomy contract (the agent proceeds on stated judgment or
-stands down when escalation exhausts). That combination is Sundial.
-Corrections welcome — file an issue with a link.
-
-The pattern write-up: [docs/escalation-then-autonomy.md](docs/escalation-then-autonomy.md).
-
-## Troubleshooting delivery
-
-Notifications that compile and run without error can still never reach the
-screen. Three silent killers, all fixed in `setup.sh` as of v1.0.2 — see
-[docs/notes/delivery-incident-2026-07-03.md](docs/notes/delivery-incident-2026-07-03.md):
-
-- **Click Allow on the one-time permission prompt.** Dismissing or denying
-  it drops every banner with no error anywhere.
-- **External display?** Enable System Settings -> Notifications -> "Allow
-  notifications when mirroring or sharing" — mirroring silently suppresses
-  all banners otherwise.
-- **Notification style: Alerts**, not Banners, so a missed nudge doesn't
-  auto-dismiss before you see it.
-
-## Roadmap
-
-- **v2 — self-estimation (shipped):** plain commitments carry calibrated
-  P50/P90 from the agent's own measured ratio history (`--est/--bucket` on
-  `remember`) instead of zero-shot guessing (which
-  [measurably fails](https://arxiv.org/abs/2604.22750)). Deadlines get a
-  sanity check at creation, sessions flag work running past its own P90,
-  and the menu bar shows the active promise's calibrated state.
-- Learned quiet hours from your actual rhythm; sibling-session awareness;
-  cross-machine commitments between two owners' agents; estimation
-  covariates from the verified sensor survey
-  (docs/research/2026-07-11-macos-sensor-survey.md).
-- `sundial doctor` — one command verifying the whole delivery chain
-  (daemon, applet identity, permission registration, mirroring setting).
-
-## Provenance
-
-Timezone and metering logic adapted from internal utilities; rewritten
-standalone here. Built in one day, live, by an agent wearing the clock it
-was building — four of its design rails exist because the thing caught its
-own failure modes in production while under construction.
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.9+-3776AB?style=flat&logo=python&logoColor=white" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/version-3.0.0a0-blue?style=flat" alt="Version 3.0.0a0">
+  <img src="https://img.shields.io/badge/architecture-Zero--LLM%20%C2%B7%20Local--First-047857?style=flat" alt="Architecture">
+  <img src="https://img.shields.io/badge/tests-357%20passed-34C759?style=flat" alt="Tests">
+  <img src="https://img.shields.io/badge/linter-Ruff%20SOTA%20Clean-black?style=flat" alt="Ruff">
+  <img src="https://img.shields.io/badge/license-MIT-red?style=flat" alt="License">
+  <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Headless-555555?style=flat" alt="Platforms">
+</p>
 
 ---
 
-<p align="center">Built with obsession by <a href="https://jservo.com"><b>J. Servo</b></a> — agentic systems that keep their promises.</p>
+> ### ✦ *"Sundial measures absence, not time."*
 
-MIT © 2026 J. Servo LLC
+Your coding agent asks you a question and you step away. Today, nothing happens — the session hangs, the question rots, and the work stalls. 
+
+**Sundial is the missing half of human-in-the-loop:** when the human becomes the blocker, the agent's clock keeps running. It nudges you on your desktop, escalates politely through absence, greets you with continuity upon your return — and if you never answer, the agent proceeds on its stated judgment or stands down. 
+
+**Deterministically. With zero model calls. 100% local.**
+
+---
+
+## ❖ Core Value Pillars & Architecture Pipeline
+
+```mermaid
+flowchart TD
+    subgraph Sensors["1. Zero-Permission Sensors (core/backends)"]
+        S1["macOS: IOHIDSystem · lsappinfo · pmset"]
+        S2["Linux: xprintidle · loginctl · xdotool"]
+        S3["Headless: Wall ceilings only"]
+    end
+
+    subgraph Watcher["2. The Watcher Daemon (watcher/ — Zero LLM)"]
+        W1["Presence Classifier (HERE / ELSEWHERE / AWAY)"]
+        W2["Unseen-Time Retimed Ladder (10m / 20m / 50m)"]
+        W3["Breakpoint Delivery (Holds pings ≤3m for typing pause)"]
+        W4["Sound Courtesy (Screen-lock & 30m absence muting)"]
+    end
+
+    subgraph Ledgers["3. The Ledgers (data/ — Atomic JSON & fcntl flock)"]
+        L1["commitments.json (Promises & Awaiting-Reply Asks)"]
+        L2["notified.json (Rung accounting & ripe_here_cycles)"]
+        L3["session-ledger.json (Dual Clock: Wall-ms × Tokens)"]
+        L4["habits.jsonl (Append-only behavioral audit log)"]
+        L5["session_claim.json & session_speak.json (Queue routing)"]
+    end
+
+    subgraph Agent["4. Agent Lifecycle Hooks (hooks/ & core/adapters)"]
+        H1["session_start Hook (Injects <sundial> context, age, P90 health)"]
+        H2["prompt_submit Hook (Disarms asks, filters machine events)"]
+        H3["Autonomy Decision Gate (Proceed vs. Stand Down)"]
+    end
+
+    Sensors -->|Softens on None| Watcher
+    Watcher -->|Atomic writes| Ledgers
+    Ledgers -->|Context injection| Agent
+    Agent -.->|Human typing disarms| Ledgers
+```
+
+### 1. The Presence-Scaled Absence Ladder
+Escalation advances **only while you genuinely haven't seen the chat**:
+
+```
+          you ask ──► 10 min unseen ──► 20 min ──► 50 min ──► agent decides
+presence:   HERE ▸ clock paused (you can see the chat — silence means "not now")
+       ELSEWHERE ▸ half speed  (you're in another app — popups may name it)
+            AWAY ▸ full speed  (nobody's home — sound travels farther than pixels)
+backstop: a wall ceiling forces the final rung, whatever the sensors say
+```
+
+* **Urgency Tiers (`--weight`):**
+  * `high`: Retimed ladder (5m / 10m / 20m), **40m wall ceiling**, speaks final rung aloud.
+  * `normal`: Default ladder (10m / 20m / 50m), **90m wall ceiling**, 3 rungs.
+  * `low`: Slower ladder (30m / 90m), **3h wall ceiling**, 2 rungs.
+
+### 2. Bounded Breakpoint Delivery
+A ripe nudge never fires mid-keystroke. Drawing from **Interruption Science**, the daemon holds ripe notifications for up to **3 minutes** waiting for a natural typing gap or application switch before delivering.
+
+### 3. Sound Courtesy with Manners
+Chimes escalate with urgency (**Tink $\to$ Glass $\to$ Hero**, and **Purr** on return). Sound volume softens when you are busy elsewhere, and **mutes unconditionally** if your screen is locked or you have been away $> 30\text{ minutes}$. Popups and ledger tracking run 24/7.
+
+### 4. Self-Calibrated Task Estimation (`lib/estimator.py`)
+Agents stop guessing with fabricated human calendar weeks. Sundial tracks the **empirical ratio distribution** ($R = \text{actual\_s} / \text{est\_s}$) across completed tasks in `habits.jsonl` to output calibrated **P50 and P90 execution durations** with small-$n$ honesty floors.
+
+### 5. Session-Voice Queue Routing
+When a live agent session is open (verified via `session_claim.json` heartbeat), non-terminal rungs route silently into the session queue (`session_speak.json`) so the agent speaks them in-context. Terminal rungs mirror to both desktop and chat.
+
+---
+
+## ❖ Technical Feature Matrix
+
+| Subsystem | Features & Capabilities | Performance & Safety Posture |
+|---|---|---|
+| **Presence Engine** | • Zero-permission OS reads (`HIDIdleTime`, `LSDisplayName`, `pmset`)<br>• Tri-state classification: `HERE` (chat visible), `ELSEWHERE` (other app), `AWAY` (idle)<br>• Live WebRTC & Meet detection (`in_call`) | • **Softening Rail:** Missing sensors return `None` and soften to wall time — never block<br>• Zero window titles or keystroke contents read |
+| **The Watcher Daemon** | • Pure Python stdlib date arithmetic (Zero LLM)<br>• **Breakpoint Delivery:** Holds ripe pings $\le 3\text{ min}$ for typing pauses<br>• **Sound Courtesy:** Mutes audio when screen is locked or absent $> 30\text{ min}$ | • **$\le 3$ Pings Cap** strictly enforced per item<br>• Single-driver verification enforced by [`cli/doctor.py`](file:///Users/OTI_1/Desktop/sundial-staging/cli/doctor.py)<br>• 24/7 background operation |
+| **The Ledgers** | • Atomic replacement via `NamedTemporaryFile` + `fsync()` + `os.replace()`<br>• Inter-process locking via `fcntl.flock` on `data/.lock`<br>• Automatic corrupt byte quarantine (`.corrupt-<timestamp>`) | • **Call-Time Path Derivation:** Live data cannot be wiped by test suites<br>• 100% git-ignored state directory |
+| **Self-Estimation Loop** | • Empirical ratio distribution ($R = \text{actual\_s} / \text{est\_s}$) calibration<br>• Small-$n$ honesty floor ($2.0\times$ multiplier when $N < 5$)<br>• Outlier clamp ($> 20.0\times$ excluded as calendar idleness) | • Computes empirical **P50 / P90** durations<br>• `sanity_line` warns at task creation if deadline is tighter than historical P90 |
+| **Universal Adapter** | • Generic Hook Protocol: JSON on stdin $\to$ text block on stdout $\to$ `exit 0` always<br>• Supported adapters: `claude-code`, `hermes`, and `generic`<br>• Machine event detection (`<task-notification>`, `[SYSTEM NOTIFICATION`) | • **Fail-Safe Contract:** Clock errors silently exit 0 with empty output; never blocks an interactive shell |
+
+---
+
+## ⬡ Verdict & Autonomy Vocabulary
+
+When an agent blocks on an awaiting-reply question (`sundial ask "<question>"`), the ladder climbs until expiry, triggering the **Autonomy Gate** ([`lib/policy.py`](file:///Users/OTI_1/Desktop/sundial-staging/lib/policy.py)):
+
+```
+┌─────────────────────────┬─────────────────────────────────────────────────────────────┐
+│ Verdict                 │ Condition & Contract                                        │
+├─────────────────────────┼─────────────────────────────────────────────────────────────┤
+│ REQUIRE_EXPLICIT_YES    │ Action flagged --irreversible; silence NEVER authorizes it. │
+│ PROCEED                 │ Reversible AND confidence ≥ 0.95.                           │
+│ PROCEED (Present-Silence│ Reversible AND confidence 0.80–0.95 AND ripe_here_cycles ≥ 3│
+│          Proven)        │ (User sat in front of the chat for ≥30m without objecting). │
+│ STAND_DOWN              │ Confidence < 0.80 or insufficient presence proof.           │
+└─────────────────────────┴─────────────────────────────────────────────────────────────┘
+```
+
+> **The Autonomy Rule:** Silence-while-present is an answer; silence-while-absent is a void. They receive distinct, deterministic responses.
+
+---
+
+## ⌘ Quickstart
+
+### 1. Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/bigjoe-oti/sundial.git ~/sundial
+cd ~/sundial
+
+# Run the installer for your target platform
+./setup.sh --name "YourName" --fresh
+```
+
+`setup.sh` wires the lifecycle hooks, compiles the identified notifier applet (`Sundial.app`), configures the launchd daemon, and initializes your agent's `birth.json` timestamp.
+
+### 2. Multi-Platform Targets
+
+Sundial v3 supports multiple host environments via `--platform`:
+```bash
+./setup.sh --platform macos   # Default: compiled applet + launchd watcher
+./setup.sh --platform hermes  # Hermes integration checklist (hooks + cron tick)
+./setup.sh --platform linux   # Linux systemd timer + notify-send helper
+```
+
+### 3. CLI Command Reference
+
+```bash
+# Query the clock, agent age, and due commitments
+sundial now
+
+# Arm an awaiting-reply nudge when blocked on the human
+sundial ask "Should the navigation header be sticky?" \
+  --due +10m \
+  --weight normal \
+  --confidence 0.90 \
+  --default "Make it sticky and continue"
+
+# Record a ripening commitment with self-calibrated estimation
+sundial remember "Refactor auth middleware" --due 2026-09-01 --est 45m --bucket build
+
+# Mark commitments complete (records actual duration into habits.jsonl)
+sundial done <id>
+
+# Run comprehensive system diagnostics
+sundial doctor
+
+# Output unified read-only status for UI surfaces (SwiftBar / Waybar)
+sundial status --json
+```
+
+---
+
+## ⬡ Extension Points & Configuration Reference
+
+Configure Sundial behaviors without modifying source code by placing plain text files in `data/`:
+
+| File | Format | Purpose |
+|---|---|---|
+| `data/owner.txt` | Single string | Owner name used in personalized notification copy |
+| `data/meeting_apps.txt` | App name per line | Allowlist for meeting detection (`zoom.us`, `Teams`, `FaceTime`, etc.) |
+| `data/watch_roots.txt` | Path per line | Roots scanned for new project subfolders (default: `~/Desktop`) |
+| `data/ignore_paths.txt` | Path prefix per line | Paths the curiosity sensor should never mention |
+| `data/chime.txt` | `'off'` or float multiplier | Volume scaling for audio alerts (`0.5`, `1.0`, or `off`) |
+| `data/speak.txt` | Voice name (or empty) | Opts into speaking the final rung aloud via `/usr/bin/say` |
+| `data/prep_enabled` | Empty file | Enables silent background meeting-notes drafting |
+
+---
+
+## ⬡ Repository Structure
+
+```
+sundial/
+├── bin/
+│   ├── sundial                  # Unified CLI dispatcher
+│   └── sundial-hermes-hook      # Generic stdin/stdout JSON protocol hook
+├── core/
+│   ├── adapters.py              # AgentAdapter abstract contract
+│   ├── backends.py              # PresenceBackend & NotifyBackend abstract contracts
+│   └── backends_impl/           # macOS, Linux, and Headless backend implementations
+├── lib/
+│   ├── core.py                  # Atomic JSON IO, fcntl locks, birth, commitments
+│   ├── policy.py                # Urgency tiers, ladder timing, autonomy gate
+│   ├── estimator.py             # Ratio-distribution percentile engine (P50/P90)
+│   ├── decay.py                 # ACT-R base-level activation memory decay calculator
+│   ├── quiethours.py            # Deterministic learned quiet hours (sound-gated)
+│   └── tzutil.py                # Local/UTC timezone transformations
+├── watcher/
+│   ├── watcher.py               # 24/7 daemon loop, breakpoint delivery, sound courtesy
+│   ├── presence.py              # HIDIdleTime, lsappinfo, pmset assertion parsing
+│   ├── opportunities.py        # Meeting detection, folder curiosity, habit logging
+│   └── owner_model.py           # Statistical distillation of habit ledger into histograms
+├── cli/                         # Atomic CLI verb scripts (ask, remember, due, doctor, etc.)
+├── hooks/                       # SessionStart and UserPromptSubmit harness hooks
+├── contrib/
+│   └── sundial.30s.sh           # SwiftBar / Waybar menu-bar status plugin
+└── tests/                       # 357 unit tests covering contracts, backends, and ledgers
+```
+
+---
+
+## ✓ Testing & Code Quality Posture
+
+Sundial enforces a zero-warning quality standard across all modules:
+
+```bash
+# Execute the full unit test suite (357 tests)
+python3 -m pytest tests/
+
+# Strict SOTA linting and style validation via Ruff
+python3 -m ruff check .
+```
+
+---
+
+## 📜 Documentation Index
+
+| Document | Description & Audience |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Technical architecture overview and actor separation model |
+| [docs/escalation-then-autonomy.md](docs/escalation-then-autonomy.md) | The escalation ladder and terminal autonomy contract design |
+| [docs/integrations/hermes.md](docs/integrations/hermes.md) | Hermes native hook and cron integration specification |
+| [docs/superpowers/specs/2026-08-26-universal-backend-design.md](docs/superpowers/specs/2026-08-26-universal-backend-design.md) | Universal backend and agent adapter specifications |
+| [docs/research/2026-07-17-temporal-scene-sweep.md](docs/research/2026-07-17-temporal-scene-sweep.md) | Adversarial prior art survey across HCI and agent research |
+| [docs/notes/delivery-incident-2026-07-03.md](docs/notes/delivery-incident-2026-07-03.md) | Forensic post-mortem on macOS Notification Center attribution |
+
+---
+
+## 🔒 License & Lineage
+
+Proprietary Lineage © **J. Servo LLC**. Released under the **MIT License**.
+
+<p align="center">
+  Built with obsession by <a href="https://jservo.com"><b>J. Servo</b></a> — <i>Agentic systems that keep their promises.</i>
+</p>
