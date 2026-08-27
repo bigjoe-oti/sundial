@@ -1,16 +1,22 @@
-# Sundial
+<!-- markdownlint-disable MD033 MD041 -->
+<p align="center">
+  <img src="assets/sundial-logo.png" width="160" alt="Sundial Logo">
+</p>
 
-![Sundial Logo](assets/sundial-logo.png)
+<h1 align="center">Sundial</h1>
+<p align="center">
+  <b>A sense of time for AI agents. Local-first, zero-dependency, no LLM in the loop.</b>
+</p>
 
-**A sense of time for AI agents. Local-first, zero-dependency, no LLM in the loop.**
-
-![Python 3.9+](https://img.shields.io/badge/python-3.9+-3776AB?style=flat&logo=python&logoColor=white)
-![Version 3.0.0a0](https://img.shields.io/badge/version-3.0.0a0-blue?style=flat)
-![Architecture](https://img.shields.io/badge/architecture-Zero--LLM%20%C2%B7%20Local--First-047857?style=flat)
-![Tests](https://img.shields.io/badge/tests-357%20passed-34C759?style=flat)
-![Ruff](https://img.shields.io/badge/linter-Ruff%20SOTA%20Clean-black?style=flat)
-![License](https://img.shields.io/badge/license-MIT-red?style=flat)
-![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Headless-555555?style=flat)
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.9+-3776AB?style=flat&logo=python&logoColor=white" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/version-3.0.0a0-blue?style=flat" alt="Version 3.0.0a0">
+  <img src="https://img.shields.io/badge/architecture-Zero--LLM%20%C2%B7%20Local--First-047857?style=flat" alt="Architecture">
+  <img src="https://img.shields.io/badge/tests-357%20passed-34C759?style=flat" alt="Tests">
+  <img src="https://img.shields.io/badge/linter-Ruff%20SOTA%20Clean-black?style=flat" alt="Ruff">
+  <img src="https://img.shields.io/badge/license-MIT-red?style=flat" alt="License">
+  <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Headless-555555?style=flat" alt="Platforms">
+</p>
 
 ---
 
@@ -84,11 +90,11 @@ A ripe nudge never fires mid-keystroke. Drawing from **Interruption Science**, t
 
 ### 3. Sound Courtesy with Manners
 
-Chimes escalate with urgency (**Tink $\to$ Glass $\to$ Hero**, and **Purr** on return). Sound volume softens when you are busy elsewhere, and **mutes unconditionally** if your screen is locked or you have been away $> 30\text{ minutes}$. Popups and ledger tracking run 24/7.
+Chimes escalate with urgency (**Tink → Glass → Hero**, and **Purr** on return). Sound volume softens when you are busy elsewhere, and **mutes unconditionally** if your screen is locked or you have been away > 30 minutes. Popups and ledger tracking run 24/7.
 
 ### 4. Self-Calibrated Task Estimation (`lib/estimator.py`)
 
-Agents stop guessing with fabricated human calendar weeks. Sundial tracks the **empirical ratio distribution** ($R = \text{actual\_s} / \text{est\_s}$) across completed tasks in `habits.jsonl` to output calibrated **P50 and P90 execution durations** with small-$n$ honesty floors.
+Agents stop guessing with fabricated human calendar weeks. Sundial tracks the **empirical ratio distribution** (`R = actual_s / est_s`) across completed tasks in `habits.jsonl` to output calibrated **P50 and P90 execution durations** with small-n honesty floors (2.0× floor when N < 5, and > 20.0× outlier clamp).
 
 ### 5. Session-Voice Queue Routing
 
@@ -101,10 +107,10 @@ When a live agent session is open (verified via `session_claim.json` heartbeat),
 | Subsystem | Features & Capabilities | Performance & Safety Posture |
 | :--- | :--- | :--- |
 | **Presence Engine** | • Zero-permission OS reads (`HIDIdleTime`, `LSDisplayName`, `pmset`) · Tri-state classification: `HERE` (chat visible), `ELSEWHERE` (other app), `AWAY` (idle) · Live WebRTC & Meet detection (`in_call`) | • **Softening Rail:** Missing sensors return `None` and soften to wall time — never block · Zero window titles or keystroke contents read |
-| **The Watcher Daemon** | • Pure Python stdlib date arithmetic (Zero LLM) · **Breakpoint Delivery:** Holds ripe pings $\le 3\text{ min}$ for typing pauses · **Sound Courtesy:** Mutes audio when screen is locked or absent $> 30\text{ min}$ | • **$\le 3$ Pings Cap** strictly enforced per item · Single-driver verification enforced by [`cli/doctor.py`](file:///Users/OTI_1/Desktop/sundial-staging/cli/doctor.py) · 24/7 background operation |
+| **The Watcher Daemon** | • Pure Python stdlib date arithmetic (Zero LLM) · **Breakpoint Delivery:** Holds ripe pings ≤ 3 min for typing pauses · **Sound Courtesy:** Mutes audio when screen is locked or absent > 30 min | • **≤ 3 Pings Cap** strictly enforced per item · Single-driver verification enforced by [`cli/doctor.py`](file:///Users/OTI_1/Desktop/sundial-staging/cli/doctor.py) · 24/7 background operation |
 | **The Ledgers** | • Atomic replacement via `NamedTemporaryFile` + `fsync()` + `os.replace()` · Inter-process locking via `fcntl.flock` on `data/.lock` · Automatic corrupt byte quarantine (`.corrupt-<timestamp>`) | • **Call-Time Path Derivation:** Live data cannot be wiped by test suites · 100% git-ignored state directory |
-| **Self-Estimation Loop** | • Empirical ratio distribution ($R = \text{actual\_s} / \text{est\_s}$) calibration · Small-$n$ honesty floor ($2.0\times$ multiplier when $N < 5$) · Outlier clamp ($> 20.0\times$ excluded as calendar idleness) | • Computes empirical **P50 / P90** durations · `sanity_line` warns at task creation if deadline is tighter than historical P90 |
-| **Universal Adapter** | • Generic Hook Protocol: JSON on stdin $\to$ text block on stdout $\to$ `exit 0` always · Supported adapters: `claude-code`, `hermes`, and `generic` · Machine event detection (`<task-notification>`, `[SYSTEM NOTIFICATION`) | • **Fail-Safe Contract:** Clock errors silently exit 0 with empty output; never blocks an interactive shell |
+| **Self-Estimation Loop** | • Empirical ratio distribution (`R = actual_s / est_s`) calibration · Small-n honesty floor (2.0× multiplier when N < 5) · Outlier clamp (> 20.0× excluded as calendar idleness) | • Computes empirical **P50 / P90** durations · `sanity_line` warns at task creation if deadline is tighter than historical P90 |
+| **Universal Adapter** | • Generic Hook Protocol: JSON on stdin → text block on stdout → `exit 0` always · Supported adapters: `claude-code`, `hermes`, and `generic` · Machine event detection (`<task-notification>`, `[SYSTEM NOTIFICATION`) | • **Fail-Safe Contract:** Clock errors silently exit 0 with empty output; never blocks an interactive shell |
 
 ---
 
@@ -260,4 +266,6 @@ python3 -m ruff check .
 
 Proprietary Lineage © **J. Servo LLC**. Released under the **MIT License**.
 
-Built with obsession by [**J. Servo**](https://jservo.com) — *Agentic systems that keep their promises.*
+<p align="center">
+  Built with obsession by <a href="https://jservo.com"><b>J. Servo</b></a> — <i>Agentic systems that keep their promises.</i>
+</p>
