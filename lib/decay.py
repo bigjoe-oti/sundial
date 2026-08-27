@@ -1,8 +1,4 @@
-"""Memory decay scoring (ACT-R base-level activation), compute-only.
-
-We do NOT act on these scores in v1 (nothing is forgotten or pruned). We only
-compute and store them, so the signal starts accruing and we can trust it before
-we ever wire it to actual forgetting.
+"""Memory decay scoring and ranking (ACT-R base-level activation).
 
 ACT-R base-level activation for a chunk i:
 
@@ -15,6 +11,9 @@ and a maintained access tally, giving the ln(accesses) + recency shape:
     score ~= ln(accesses) - d * ln(age_seconds)
 
 Higher score = more salient (recently and/or frequently touched).
+
+compute_weights() produces the raw scores; rank_memories() sorts and annotates
+them with salience tags (active / fading / dormant) for context injection.
 """
 
 from __future__ import annotations
@@ -25,6 +24,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 DECAY_RATE = 0.5
+
+# Salience boundaries for rank_memories() annotation.
+ACTIVE_THRESHOLD = 0.0     # score > 0  → active
+DORMANT_THRESHOLD = -2.0   # score < -2 → dormant; between → fading
 
 
 def _iso(ts: float) -> str:
@@ -70,3 +73,41 @@ def compute_weights(memory_dir: Path, prior: dict | None = None) -> dict:
             "last_seen": _iso(mtime),
         }
     return out
+
+
+def _salience_tag(score: float) -> str:
+    """Classify a decay score into a human-readable salience label."""
+    if score > ACTIVE_THRESHOLD:
+        return "active"
+    if score < DORMANT_THRESHOLD:
+        return "dormant"
+    return "fading"
+
+
+def rank_memories(weights: dict, top_k: int = 10) -> list[dict]:
+    """Sort memory weights by activation score and annotate with salience tags.
+
+    Takes the output of compute_weights() (or a loaded memory-weights.json) and
+    returns a sorted list of the top-K entries, each annotated with a salience
+    label for context injection into the <sundial> block.
+
+    Returns [] on empty input (fail-open, never raises).
+    """
+    if not weights:
+        return []
+    entries = []
+    for filename, info in weights.items():
+        if not isinstance(info, dict):
+            continue
+        score = info.get("score")
+        if not isinstance(score, (int, float)):
+            continue
+        entries.append({
+            "file": filename,
+            "score": float(score),
+            "salience": _salience_tag(float(score)),
+            "accesses": int(info.get("accesses", 1) or 1),
+        })
+    entries.sort(key=lambda e: e["score"], reverse=True)
+    return entries[:top_k]
+

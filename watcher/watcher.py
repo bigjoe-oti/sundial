@@ -590,6 +590,58 @@ def desktop_notify(title: str, message: str) -> bool:
         return False
 
 
+def _autonomy_dispatch(c: dict, entry: dict, fire_now) -> None:
+    """Execute pre-approved active fallback commands when terminal autonomy verdict is reached.
+
+    Safety rails:
+      - Irreversible actions never proceed (enforced by policy.py).
+      - Headless command execution is strictly restricted to confidence >= 0.95 (AUTONOMY_PROCEED_MIN).
+      - Executes detached under subprocess with output logged to data/autonomy_exec.log.
+      - Marks commitment as auto-proceeded or auto-stood-down to prevent re-execution.
+    """
+    try:
+        decision = policy.autonomy_decision(c, entry)
+        action = decision.get("action")
+        cmd = None
+        new_status = None
+
+        try:
+            conf = float(c.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            conf = 0.0
+
+        if action == "proceed" and conf >= policy.AUTONOMY_PROCEED_MIN:
+            cmd = c.get("on_proceed")
+            new_status = "auto-proceeded"
+        elif action == "stand_down":
+            cmd = c.get("on_stand_down")
+            new_status = "auto-stood-down"
+
+        if cmd and not c.get("irreversible"):
+            log_path = core.DATA / "autonomy_exec.log"
+            core.DATA.mkdir(parents=True, exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{fire_now.isoformat()}] [{action.upper()}] cid={c.get('id')} cmd={cmd}\n")
+            subprocess.Popen(
+                cmd,
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            if new_status:
+                core.resolve_commitment(c.get("id"), new_status)
+            opportunities.log_habit({
+                "kind": "autonomy-exec",
+                "cid": c.get("id"),
+                "action": action,
+                "status": new_status,
+                "ts": fire_now.isoformat(),
+            })
+    except Exception:
+        pass
+
+
 def deliver_fire(c, rung, message, state, audible, claim, fire_now, *,
                  chime_kind=None, speak_final_ok=False) -> str:
     """Shared routing+delivery for a single ripe fire. Both delivery sites
@@ -872,6 +924,9 @@ def run_cycle(force: bool = False) -> None:
                     "defer_reason": reason, "deferred_s": deferred_s,
                     "muted": True if to_session else (not audible),
                     "channel": channel})
+                # --- Active Autonomy Dispatch (terminal rungs only) ---
+                if terminal and c.get("kind") == "awaiting-reply":
+                    _autonomy_dispatch(c, entry, fire_now)
             except Exception:
                 continue
 

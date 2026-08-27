@@ -259,7 +259,9 @@ def add_commitment(text: str, due_str: str | None = None, source: str = "manual"
                    default_action: str | None = None,
                    rungs: list | None = None,
                    est_str: str | None = None,
-                   bucket: str | None = None) -> dict:
+                   bucket: str | None = None,
+                   on_proceed: str | None = None,
+                   on_stand_down: str | None = None) -> dict:
     with _ledger_lock():
         items = load_commitments()
         due = parse_due(due_str)
@@ -285,6 +287,10 @@ def add_commitment(text: str, due_str: str | None = None, source: str = "manual"
             rec["default_action"] = default_action
         if rungs:
             rec["rungs"] = [str(r) for r in rungs][:3]
+        if on_proceed:
+            rec["on_proceed"] = on_proceed
+        if on_stand_down:
+            rec["on_stand_down"] = on_stand_down
         if kind == "plain":
             _attach_estimate(rec, due, est_str, bucket)
         items.append(rec)

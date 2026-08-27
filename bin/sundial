@@ -23,5 +23,7 @@ case "$cmd" in
   tick)     exec python3 "$ROOT/cli/tick.py" "$@" ;;
   status)   exec python3 "$ROOT/cli/status.py" "$@" ;;
   doctor)   exec python3 "$ROOT/cli/doctor.py" "$@" ;;
-  *) echo "usage: sundial {now|remember|due|done|ask|answered|decline|allow|owner|estimate|snooze|tick|status|doctor} [...]" >&2; exit 1 ;;
+  mcp)      exec python3 "$ROOT/core/mcp_server.py" "$@" ;;
+  *) echo "usage: sundial {now|remember|due|done|ask|answered|decline|allow|owner|estimate|snooze|tick|status|doctor|mcp} [...]" >&2; exit 1 ;;
 esac
+

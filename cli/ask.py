@@ -26,6 +26,10 @@ def main():
                     help="action taken if you never answer (stated in the final rung)")
     ap.add_argument("--rung", action="append", dest="rungs", default=None,
                     help="pre-composed message for a rung (repeat ≤3, in order)")
+    ap.add_argument("--on-proceed", dest="on_proceed", default=None,
+                    help="shell command to execute if autonomy gate returns proceed")
+    ap.add_argument("--on-stand-down", dest="on_stand_down", default=None,
+                    help="shell command to execute if autonomy gate returns stand_down")
     args = ap.parse_args()
 
     if args.confidence is not None and not (0.0 <= args.confidence <= 1.0):
@@ -38,7 +42,9 @@ def main():
                               weight=args.weight, confidence=args.confidence,
                               irreversible=args.irreversible,
                               default_action=args.default_action,
-                              rungs=args.rungs)
+                              rungs=args.rungs,
+                              on_proceed=args.on_proceed,
+                              on_stand_down=args.on_stand_down)
     due = core.parse_iso(rec["due_at"])
     when = (due.astimezone(core.tzinfo()).strftime("%d %b %Y %H:%M")
             if due else "no due date")
@@ -49,3 +55,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -43,14 +43,46 @@ class LinuxBackend(PresenceBackend):
     """Best-effort X11/Wayland sensing; every miss returns None."""
 
     def idle_seconds(self):
+        # Tier 1: GNOME Mutter IdleMonitor (Wayland-native, GNOME 3.6+).
+        gdbus = shutil.which("gdbus")
+        if gdbus:
+            out = _run([
+                gdbus, "call", "--session",
+                "--dest", "org.gnome.Mutter.IdleMonitor",
+                "--object-path", "/org/gnome/Mutter/IdleMonitor/Core",
+                "--method", "org.gnome.Mutter.IdleMonitor.GetIdletime",
+            ])
+            # gdbus returns e.g. "(uint64 12345,)\n" — extract the number.
+            try:
+                num = out.strip().strip("()").split()[1].rstrip(",)")
+                return int(num) / 1000.0  # Mutter reports milliseconds
+            except (IndexError, ValueError):
+                pass
+
+        # Tier 2: freedesktop ScreenSaver (KDE, generic compositors).
+        if gdbus:
+            out = _run([
+                gdbus, "call", "--session",
+                "--dest", "org.freedesktop.ScreenSaver",
+                "--object-path", "/org/freedesktop/ScreenSaver",
+                "--method", "org.freedesktop.ScreenSaver.GetSessionIdleTime",
+            ])
+            try:
+                num = out.strip().strip("()").split()[1].rstrip(",)")
+                return int(num)  # freedesktop reports seconds
+            except (IndexError, ValueError):
+                pass
+
+        # Tier 3: xprintidle (X11 fallback, requires X server).
         xprintidle = shutil.which("xprintidle")
-        if not xprintidle:
-            return None
-        out = _run([xprintidle])
-        try:
-            return int(out.strip()) / 1000.0  # xprintidle reports ms
-        except ValueError:
-            return None
+        if xprintidle:
+            out = _run([xprintidle])
+            try:
+                return int(out.strip()) / 1000.0  # xprintidle reports ms
+            except ValueError:
+                pass
+
+        return None
 
     def frontmost_app(self):
         xdotool = shutil.which("xdotool")

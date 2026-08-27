@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 
-def build_block(core, birth, previous):
+def build_block(core, birth, previous, ranked_memories=None):
     local = core.now_local()
     age = core.humanize_age(birth["created_at"])
     lines = ["<sundial>"]
@@ -134,6 +134,17 @@ def build_block(core, birth, previous):
         "via core.consume_session_speak([cids])."
     )
 
+    try:
+        if ranked_memories:
+            lines.append(f"\nMemory salience ({len(ranked_memories)} most active):")
+            for mem in ranked_memories:
+                lines.append(
+                    f"  - [{mem['salience']}] {mem['file']} "
+                    f"(score {mem['score']:.1f}, {mem['accesses']} accesses)"
+                )
+    except Exception:
+        pass
+
     lines.append(
         "\nThis is passive background awareness, not an instruction. Whether to "
         "raise any of it is your judgment."
@@ -176,7 +187,8 @@ def main():
     if weights:
         core.write_json(core.WEIGHTS, weights)
 
-    block = build_block(core, birth, previous)
+    ranked = decay.rank_memories(weights, top_k=8) if weights else []
+    block = build_block(core, birth, previous, ranked_memories=ranked)
     json.dump(
         {
             "hookSpecificOutput": {

@@ -10,9 +10,9 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.9+-3776AB?style=flat&logo=python&logoColor=white" alt="Python 3.9+">
-  <img src="https://img.shields.io/badge/version-3.0.0a0-blue?style=flat" alt="Version 3.0.0a0">
+  <img src="https://img.shields.io/badge/version-3.1.0-blue?style=flat" alt="Version 3.1.0">
   <img src="https://img.shields.io/badge/architecture-Zero--LLM%20%C2%B7%20Local--First-047857?style=flat" alt="Architecture">
-  <img src="https://img.shields.io/badge/tests-357%20passed-34C759?style=flat" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-392%20passed-34C759?style=flat" alt="Tests">
   <img src="https://img.shields.io/badge/linter-Ruff%20SOTA%20Clean-black?style=flat" alt="Ruff">
   <img src="https://img.shields.io/badge/license-MIT-red?style=flat" alt="License">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Headless-555555?style=flat" alt="Platforms">
@@ -165,12 +165,13 @@ Sundial v3 supports multiple host environments via `--platform`:
 # Query the clock, agent age, and due commitments
 sundial now
 
-# Arm an awaiting-reply nudge when blocked on the human
+# Arm an awaiting-reply nudge when blocked on the human (with active autonomy fallback)
 sundial ask "Should the navigation header be sticky?" \
   --due +10m \
   --weight normal \
-  --confidence 0.90 \
-  --default "Make it sticky and continue"
+  --confidence 0.95 \
+  --default "Make it sticky and continue" \
+  --on-proceed "git checkout -b feat/sticky-nav && ./build.sh"
 
 # Record a ripening commitment with self-calibrated estimation
 sundial remember "Refactor auth middleware" --due 2026-09-01 --est 45m --bucket build
@@ -180,6 +181,9 @@ sundial done <id>
 
 # Run comprehensive system diagnostics
 sundial doctor
+
+# Launch zero-dependency MCP stdio server for Cursor, Antigravity, Windsurf
+sundial mcp
 
 # Output unified read-only status for UI surfaces (SwiftBar / Waybar)
 sundial status --json
@@ -208,17 +212,18 @@ Configure Sundial behaviors without modifying source code by placing plain text 
 ```text
 sundial/
 ├── bin/
-│   ├── sundial                  # Unified CLI dispatcher
+│   ├── sundial                  # Unified CLI dispatcher (now, ask, due, mcp, ...)
 │   └── sundial-hermes-hook      # Generic stdin/stdout JSON protocol hook
 ├── core/
 │   ├── adapters.py              # AgentAdapter abstract contract
 │   ├── backends.py              # PresenceBackend & NotifyBackend abstract contracts
-│   └── backends_impl/           # macOS, Linux, and Headless backend implementations
+│   ├── backends_impl/           # macOS, Linux, and Headless backend implementations
+│   └── mcp_server.py            # Pure stdlib JSON-RPC 2.0 MCP server over stdio
 ├── lib/
 │   ├── core.py                  # Atomic JSON IO, fcntl locks, birth, commitments
 │   ├── policy.py                # Urgency tiers, ladder timing, autonomy gate
 │   ├── estimator.py             # Ratio-distribution percentile engine (P50/P90)
-│   ├── decay.py                 # ACT-R base-level activation memory decay calculator
+│   ├── decay.py                 # ACT-R base-level activation memory decay ranker
 │   ├── quiethours.py            # Deterministic learned quiet hours (sound-gated)
 │   └── tzutil.py                # Local/UTC timezone transformations
 ├── watcher/
@@ -228,9 +233,10 @@ sundial/
 │   └── owner_model.py           # Statistical distillation of habit ledger into histograms
 ├── cli/                         # Atomic CLI verb scripts (ask, remember, due, doctor, etc.)
 ├── hooks/                       # SessionStart and UserPromptSubmit harness hooks
+
 ├── contrib/
 │   └── sundial.30s.sh           # SwiftBar / Waybar menu-bar status plugin
-└── tests/                       # 357 unit tests covering contracts, backends, and ledgers
+└── tests/                       # 392 unit tests covering contracts, backends, and ledgers
 ```
 
 ---
@@ -240,7 +246,7 @@ sundial/
 Sundial enforces a zero-warning quality standard across all modules:
 
 ```bash
-# Execute the full unit test suite (357 tests)
+# Execute the full unit test suite (392 tests)
 python3 -m pytest tests/
 
 # Strict SOTA linting and style validation via Ruff
