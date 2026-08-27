@@ -14,6 +14,7 @@ Usage:
   watcher.py --force    legacy flag, now a no-op (cycles always run)
   watcher.py --test     fire one test notification to prove the channel
 """
+from __future__ import annotations
 
 import os
 import shutil
@@ -23,6 +24,7 @@ import time
 import uuid
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import core  # noqa: E402
@@ -170,10 +172,11 @@ def pick_message(commitment_id: str, pool: tuple, **fields) -> str:
     return _cap_message(str(fields.get("text", "")))
 
 
-def migrate_entry(value) -> dict:
+def migrate_entry(value) -> dict[str, Any]:
     """notified.json values: legacy bare ISO string -> {'count': 1, 'last': str}.
     Non-int counts and missing absence fields degrade to fresh defaults so
     callers never guard against bad types."""
+    e: dict[str, Any]
     if isinstance(value, dict) and isinstance(value.get("count"), int):
         e = dict(value)
     elif isinstance(value, str):
@@ -620,8 +623,9 @@ def _autonomy_dispatch(c: dict, entry: dict, fire_now) -> None:
         if cmd and not c.get("irreversible"):
             log_path = core.DATA / "autonomy_exec.log"
             core.DATA.mkdir(parents=True, exist_ok=True)
+            act_str = str(action or "unknown").upper()
             with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"[{fire_now.isoformat()}] [{action.upper()}] cid={c.get('id')} cmd={cmd}\n")
+                f.write(f"[{fire_now.isoformat()}] [{act_str}] cid={c.get('id')} cmd={cmd}\n")
             subprocess.Popen(
                 cmd,
                 shell=True,
@@ -630,7 +634,7 @@ def _autonomy_dispatch(c: dict, entry: dict, fire_now) -> None:
                 start_new_session=True,
             )
             if new_status:
-                core.resolve_commitment(c.get("id"), new_status)
+                core.resolve_commitment(str(c.get("id", "")), new_status)
             opportunities.log_habit({
                 "kind": "autonomy-exec",
                 "cid": c.get("id"),
@@ -965,9 +969,9 @@ def run_cycle(force: bool = False) -> None:
                                      "rx_Bps": net["rx_Bps"],
                                      "tx_Bps": net["tx_Bps"]})
         for evt in events:
-            kind = evt["kind"]
-            stale = (kind == "meeting-end"
-                     and evt.get("duration_s", 0) > MEETING_MAX_PLAUSIBLE_S)
+            kind = str(evt.get("kind", ""))
+            dur_s = float(evt.get("duration_s", 0.0) or 0.0)
+            stale = (kind == "meeting-end" and dur_s > MEETING_MAX_PLAUSIBLE_S)
             # a start makes other-app start offers moot (single active
             # meeting assumption); an end answers ITS OWN app's start offer.
             # Either way the open meeting-start records to expire are:
@@ -992,8 +996,8 @@ def run_cycle(force: bool = False) -> None:
                 if stale:
                     pool_key = "meeting-end-stale"   # duration would mislead
                 else:
-                    fields["duration_m"] = int(evt.get("duration_s", 0) // 60)
-            msg = pick_message(uuid.uuid4().hex[:8], OFFER_POOL[pool_key],
+                    fields["duration_m"] = int(dur_s // 60)
+            msg = pick_message(uuid.uuid4().hex[:8], OFFER_POOL.get(pool_key, ()),
                                text="", **fields)
             expiry = ((now + timedelta(seconds=1800)).isoformat()
                       if kind == "meeting-end" else None)

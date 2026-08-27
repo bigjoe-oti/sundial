@@ -22,6 +22,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 try:
     from zoneinfo import ZoneInfo
@@ -265,7 +266,7 @@ def add_commitment(text: str, due_str: str | None = None, source: str = "manual"
     with _ledger_lock():
         items = load_commitments()
         due = parse_due(due_str)
-        rec = {
+        rec: dict[str, Any] = {
             "id": uuid.uuid4().hex[:8],
             "created_at": now_utc().isoformat(),
             "due_at": due.isoformat() if due else None,
