@@ -1,29 +1,24 @@
-<p align="center">
-  <img src="assets/sundial-logo.png" width="180" alt="Sundial Logo">
-</p>
+# Sundial
 
-<h1 align="center">Sundial</h1>
-<p align="center">
-  <b>A sense of time for AI agents. Local-first, zero-dependency, no LLM in the loop.</b>
-</p>
+![Sundial Logo](assets/sundial-logo.png)
 
-<p align="center">
-  <img src="https://img.shields.io/badge/python-3.9+-3776AB?style=flat&logo=python&logoColor=white" alt="Python 3.9+">
-  <img src="https://img.shields.io/badge/version-3.0.0a0-blue?style=flat" alt="Version 3.0.0a0">
-  <img src="https://img.shields.io/badge/architecture-Zero--LLM%20%C2%B7%20Local--First-047857?style=flat" alt="Architecture">
-  <img src="https://img.shields.io/badge/tests-357%20passed-34C759?style=flat" alt="Tests">
-  <img src="https://img.shields.io/badge/linter-Ruff%20SOTA%20Clean-black?style=flat" alt="Ruff">
-  <img src="https://img.shields.io/badge/license-MIT-red?style=flat" alt="License">
-  <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Headless-555555?style=flat" alt="Platforms">
-</p>
+**A sense of time for AI agents. Local-first, zero-dependency, no LLM in the loop.**
+
+![Python 3.9+](https://img.shields.io/badge/python-3.9+-3776AB?style=flat&logo=python&logoColor=white)
+![Version 3.0.0a0](https://img.shields.io/badge/version-3.0.0a0-blue?style=flat)
+![Architecture](https://img.shields.io/badge/architecture-Zero--LLM%20%C2%B7%20Local--First-047857?style=flat)
+![Tests](https://img.shields.io/badge/tests-357%20passed-34C759?style=flat)
+![Ruff](https://img.shields.io/badge/linter-Ruff%20SOTA%20Clean-black?style=flat)
+![License](https://img.shields.io/badge/license-MIT-red?style=flat)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Headless-555555?style=flat)
 
 ---
 
 > ### ✦ *"Sundial measures absence, not time."*
 
-Your coding agent asks you a question and you step away. Today, nothing happens — the session hangs, the question rots, and the work stalls. 
+Your coding agent asks you a question and you step away. Today, nothing happens — the session hangs, the question rots, and the work stalls.
 
-**Sundial is the missing half of human-in-the-loop:** when the human becomes the blocker, the agent's clock keeps running. It nudges you on your desktop, escalates politely through absence, greets you with continuity upon your return — and if you never answer, the agent proceeds on its stated judgment or stands down. 
+**Sundial is the missing half of human-in-the-loop:** when the human becomes the blocker, the agent's clock keeps running. It nudges you on your desktop, escalates politely through absence, greets you with continuity upon your return — and if you never answer, the agent proceeds on its stated judgment or stands down.
 
 **Deterministically. With zero model calls. 100% local.**
 
@@ -67,9 +62,10 @@ flowchart TD
 ```
 
 ### 1. The Presence-Scaled Absence Ladder
+
 Escalation advances **only while you genuinely haven't seen the chat**:
 
-```
+```text
           you ask ──► 10 min unseen ──► 20 min ──► 50 min ──► agent decides
 presence:   HERE ▸ clock paused (you can see the chat — silence means "not now")
        ELSEWHERE ▸ half speed  (you're in another app — popups may name it)
@@ -83,15 +79,19 @@ backstop: a wall ceiling forces the final rung, whatever the sensors say
   * `low`: Slower ladder (30m / 90m), **3h wall ceiling**, 2 rungs.
 
 ### 2. Bounded Breakpoint Delivery
+
 A ripe nudge never fires mid-keystroke. Drawing from **Interruption Science**, the daemon holds ripe notifications for up to **3 minutes** waiting for a natural typing gap or application switch before delivering.
 
 ### 3. Sound Courtesy with Manners
+
 Chimes escalate with urgency (**Tink $\to$ Glass $\to$ Hero**, and **Purr** on return). Sound volume softens when you are busy elsewhere, and **mutes unconditionally** if your screen is locked or you have been away $> 30\text{ minutes}$. Popups and ledger tracking run 24/7.
 
 ### 4. Self-Calibrated Task Estimation (`lib/estimator.py`)
+
 Agents stop guessing with fabricated human calendar weeks. Sundial tracks the **empirical ratio distribution** ($R = \text{actual\_s} / \text{est\_s}$) across completed tasks in `habits.jsonl` to output calibrated **P50 and P90 execution durations** with small-$n$ honesty floors.
 
 ### 5. Session-Voice Queue Routing
+
 When a live agent session is open (verified via `session_claim.json` heartbeat), non-terminal rungs route silently into the session queue (`session_speak.json`) so the agent speaks them in-context. Terminal rungs mirror to both desktop and chat.
 
 ---
@@ -99,12 +99,12 @@ When a live agent session is open (verified via `session_claim.json` heartbeat),
 ## ❖ Technical Feature Matrix
 
 | Subsystem | Features & Capabilities | Performance & Safety Posture |
-|---|---|---|
-| **Presence Engine** | • Zero-permission OS reads (`HIDIdleTime`, `LSDisplayName`, `pmset`)<br>• Tri-state classification: `HERE` (chat visible), `ELSEWHERE` (other app), `AWAY` (idle)<br>• Live WebRTC & Meet detection (`in_call`) | • **Softening Rail:** Missing sensors return `None` and soften to wall time — never block<br>• Zero window titles or keystroke contents read |
-| **The Watcher Daemon** | • Pure Python stdlib date arithmetic (Zero LLM)<br>• **Breakpoint Delivery:** Holds ripe pings $\le 3\text{ min}$ for typing pauses<br>• **Sound Courtesy:** Mutes audio when screen is locked or absent $> 30\text{ min}$ | • **$\le 3$ Pings Cap** strictly enforced per item<br>• Single-driver verification enforced by [`cli/doctor.py`](file:///Users/OTI_1/Desktop/sundial-staging/cli/doctor.py)<br>• 24/7 background operation |
-| **The Ledgers** | • Atomic replacement via `NamedTemporaryFile` + `fsync()` + `os.replace()`<br>• Inter-process locking via `fcntl.flock` on `data/.lock`<br>• Automatic corrupt byte quarantine (`.corrupt-<timestamp>`) | • **Call-Time Path Derivation:** Live data cannot be wiped by test suites<br>• 100% git-ignored state directory |
-| **Self-Estimation Loop** | • Empirical ratio distribution ($R = \text{actual\_s} / \text{est\_s}$) calibration<br>• Small-$n$ honesty floor ($2.0\times$ multiplier when $N < 5$)<br>• Outlier clamp ($> 20.0\times$ excluded as calendar idleness) | • Computes empirical **P50 / P90** durations<br>• `sanity_line` warns at task creation if deadline is tighter than historical P90 |
-| **Universal Adapter** | • Generic Hook Protocol: JSON on stdin $\to$ text block on stdout $\to$ `exit 0` always<br>• Supported adapters: `claude-code`, `hermes`, and `generic`<br>• Machine event detection (`<task-notification>`, `[SYSTEM NOTIFICATION`) | • **Fail-Safe Contract:** Clock errors silently exit 0 with empty output; never blocks an interactive shell |
+| :--- | :--- | :--- |
+| **Presence Engine** | • Zero-permission OS reads (`HIDIdleTime`, `LSDisplayName`, `pmset`) · Tri-state classification: `HERE` (chat visible), `ELSEWHERE` (other app), `AWAY` (idle) · Live WebRTC & Meet detection (`in_call`) | • **Softening Rail:** Missing sensors return `None` and soften to wall time — never block · Zero window titles or keystroke contents read |
+| **The Watcher Daemon** | • Pure Python stdlib date arithmetic (Zero LLM) · **Breakpoint Delivery:** Holds ripe pings $\le 3\text{ min}$ for typing pauses · **Sound Courtesy:** Mutes audio when screen is locked or absent $> 30\text{ min}$ | • **$\le 3$ Pings Cap** strictly enforced per item · Single-driver verification enforced by [`cli/doctor.py`](file:///Users/OTI_1/Desktop/sundial-staging/cli/doctor.py) · 24/7 background operation |
+| **The Ledgers** | • Atomic replacement via `NamedTemporaryFile` + `fsync()` + `os.replace()` · Inter-process locking via `fcntl.flock` on `data/.lock` · Automatic corrupt byte quarantine (`.corrupt-<timestamp>`) | • **Call-Time Path Derivation:** Live data cannot be wiped by test suites · 100% git-ignored state directory |
+| **Self-Estimation Loop** | • Empirical ratio distribution ($R = \text{actual\_s} / \text{est\_s}$) calibration · Small-$n$ honesty floor ($2.0\times$ multiplier when $N < 5$) · Outlier clamp ($> 20.0\times$ excluded as calendar idleness) | • Computes empirical **P50 / P90** durations · `sanity_line` warns at task creation if deadline is tighter than historical P90 |
+| **Universal Adapter** | • Generic Hook Protocol: JSON on stdin $\to$ text block on stdout $\to$ `exit 0` always · Supported adapters: `claude-code`, `hermes`, and `generic` · Machine event detection (`<task-notification>`, `[SYSTEM NOTIFICATION`) | • **Fail-Safe Contract:** Clock errors silently exit 0 with empty output; never blocks an interactive shell |
 
 ---
 
@@ -112,7 +112,7 @@ When a live agent session is open (verified via `session_claim.json` heartbeat),
 
 When an agent blocks on an awaiting-reply question (`sundial ask "<question>"`), the ladder climbs until expiry, triggering the **Autonomy Gate** ([`lib/policy.py`](file:///Users/OTI_1/Desktop/sundial-staging/lib/policy.py)):
 
-```
+```text
 ┌─────────────────────────┬─────────────────────────────────────────────────────────────┐
 │ Verdict                 │ Condition & Contract                                        │
 ├─────────────────────────┼─────────────────────────────────────────────────────────────┤
@@ -146,6 +146,7 @@ cd ~/sundial
 ### 2. Multi-Platform Targets
 
 Sundial v3 supports multiple host environments via `--platform`:
+
 ```bash
 ./setup.sh --platform macos   # Default: compiled applet + launchd watcher
 ./setup.sh --platform hermes  # Hermes integration checklist (hooks + cron tick)
@@ -185,7 +186,7 @@ sundial status --json
 Configure Sundial behaviors without modifying source code by placing plain text files in `data/`:
 
 | File | Format | Purpose |
-|---|---|---|
+| :--- | :--- | :--- |
 | `data/owner.txt` | Single string | Owner name used in personalized notification copy |
 | `data/meeting_apps.txt` | App name per line | Allowlist for meeting detection (`zoom.us`, `Teams`, `FaceTime`, etc.) |
 | `data/watch_roots.txt` | Path per line | Roots scanned for new project subfolders (default: `~/Desktop`) |
@@ -198,7 +199,7 @@ Configure Sundial behaviors without modifying source code by placing plain text 
 
 ## ⬡ Repository Structure
 
-```
+```text
 sundial/
 ├── bin/
 │   ├── sundial                  # Unified CLI dispatcher
@@ -245,7 +246,7 @@ python3 -m ruff check .
 ## 📜 Documentation Index
 
 | Document | Description & Audience |
-|---|---|
+| :--- | :--- |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Technical architecture overview and actor separation model |
 | [docs/escalation-then-autonomy.md](docs/escalation-then-autonomy.md) | The escalation ladder and terminal autonomy contract design |
 | [docs/integrations/hermes.md](docs/integrations/hermes.md) | Hermes native hook and cron integration specification |
@@ -259,6 +260,4 @@ python3 -m ruff check .
 
 Proprietary Lineage © **J. Servo LLC**. Released under the **MIT License**.
 
-<p align="center">
-  Built with obsession by <a href="https://jservo.com"><b>J. Servo</b></a> — <i>Agentic systems that keep their promises.</i>
-</p>
+Built with obsession by [**J. Servo**](https://jservo.com) — *Agentic systems that keep their promises.*
