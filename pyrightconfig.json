@@ -1,0 +1,15 @@
+{
+  "include": [
+    "."
+  ],
+  "extraPaths": [
+    "lib",
+    "watcher",
+    "core",
+    "core/backends_impl",
+    "cli",
+    "hooks"
+  ],
+  "reportMissingImports": "none",
+  "reportAttributeAccessIssue": "none"
+}
